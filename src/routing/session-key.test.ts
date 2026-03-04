@@ -8,6 +8,7 @@ import {
   classifySessionKeyShape,
   isValidAgentId,
   parseAgentSessionKey,
+  resolveThreadSessionKeys,
   toAgentStoreSessionKey,
 } from "./session-key.js";
 
@@ -128,5 +129,58 @@ describe("isValidAgentId", () => {
     expect(isValidAgentId("Agent not found: xyz")).toBe(false);
     expect(isValidAgentId("../../../etc/passwd")).toBe(false);
     expect(isValidAgentId("a".repeat(65))).toBe(false);
+  });
+});
+
+describe("resolveThreadSessionKeys", () => {
+  it("returns base session key when thread id is missing", () => {
+    expect(
+      resolveThreadSessionKeys({
+        baseSessionKey: "agent:main:discord:channel:parent",
+      }),
+    ).toEqual({
+      sessionKey: "agent:main:discord:channel:parent",
+      parentSessionKey: undefined,
+    });
+  });
+
+  it("derives thread suffix keys by default and normalizes thread id", () => {
+    expect(
+      resolveThreadSessionKeys({
+        baseSessionKey: "agent:main:discord:channel:parent",
+        threadId: " Thread-ABC ",
+        parentSessionKey: "agent:main:discord:channel:parent",
+      }),
+    ).toEqual({
+      sessionKey: "agent:main:discord:channel:parent:thread:thread-abc",
+      parentSessionKey: "agent:main:discord:channel:parent",
+    });
+  });
+
+  it("supports suffix-disabled mode for channels that track thread scope externally", () => {
+    expect(
+      resolveThreadSessionKeys({
+        baseSessionKey: "agent:main:discord:channel:parent",
+        threadId: "thread-abc",
+        parentSessionKey: "agent:main:discord:channel:parent",
+        useSuffix: false,
+      }),
+    ).toEqual({
+      sessionKey: "agent:main:discord:channel:parent",
+      parentSessionKey: "agent:main:discord:channel:parent",
+    });
+  });
+
+  it("accepts custom thread normalization for provider-specific thread ids", () => {
+    expect(
+      resolveThreadSessionKeys({
+        baseSessionKey: "agent:main:telegram:group:-100123",
+        threadId: " 321 ",
+        normalizeThreadId: (value) => `topic-${value.trim()}`,
+      }),
+    ).toEqual({
+      sessionKey: "agent:main:telegram:group:-100123:thread:topic-321",
+      parentSessionKey: undefined,
+    });
   });
 });

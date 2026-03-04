@@ -50,6 +50,9 @@ subscription** (OAuth) and **Anthropic** (API key or `claude setup-token`).
 - `agents.defaults.model.primary` and `agents.defaults.model.fallbacks`
 - `agents.defaults.imageModel.primary` and `agents.defaults.imageModel.fallbacks`
 - `agents.defaults.models` (allowlist + aliases + provider params)
+- `agents.defaults.promptBudget` (preflight prompt token guard)
+- `agents.defaults.models["provider/model"].promptBudget` (per-model overrides)
+- `agents.defaults.modelRouting` (optional cost-aware tier routing)
 - `models.providers` (custom providers written into `models.json`)
 
 Model refs are normalized to lowercase. Provider aliases like `z.ai/*` normalize
@@ -57,6 +60,83 @@ to `zai/*`.
 
 Provider configuration examples (including OpenCode Zen) live in
 [/gateway/configuration](/gateway/configuration#opencode-zen-multi-model-proxy).
+
+## Preflight prompt budgets
+
+OpenClaw runs a preflight prompt-size check before each LLM call in the embedded
+runner to avoid pathological long-context requests.
+
+Defaults:
+
+- `enabled: true`
+- `profile: "balanced"` (built-ins: `conservative`, `balanced`, `throughput`)
+- `charsPerToken: 4`
+- `imageTokens: 1200` (per prompt image)
+- `softLimitRatio: 0.7` with `softAction: "trim"`
+- `hardLimitRatio: 0.85` with `hardAction: "block"`
+
+Actions:
+
+- `softAction`: `"warn" | "trim" | "summarize"` (`summarize` currently uses trim behavior)
+- `hardAction`: `"trim" | "summarize" | "block"`
+
+When `trim`/`summarize` is selected, OpenClaw drops oldest history first and
+keeps the newest context. If a request still exceeds the hard limit, it is
+blocked with an actionable error.
+
+One-flag off switch:
+
+```json5
+{
+  agents: {
+    defaults: {
+      promptBudget: { enabled: false },
+    },
+  },
+}
+```
+
+Per-model override example:
+
+```json5
+{
+  agents: {
+    defaults: {
+      promptBudget: { softLimitRatio: 0.7, hardLimitRatio: 0.85, hardAction: "block" },
+      models: {
+        "openrouter/anthropic/claude-sonnet-4-6": {
+          promptBudget: { softAction: "warn", hardAction: "trim" },
+        },
+      },
+    },
+  },
+}
+```
+
+Custom profile example:
+
+```json5
+{
+  agents: {
+    defaults: {
+      promptBudget: {
+        profile: "throughput",
+        profiles: {
+          throughput: {
+            softLimitRatio: 0.8,
+            hardLimitRatio: 0.92,
+            softAction: "warn",
+            hardAction: "trim",
+          },
+        },
+      },
+    },
+  },
+}
+```
+
+Prompt-budget preflight telemetry is persisted per turn as prompt footprint entries and surfaced
+in the Usage dashboard ("Prompt Footprint" + profile breakdown).
 
 ## “Model is not allowed” (and why replies stop)
 

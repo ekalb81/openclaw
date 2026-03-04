@@ -40,6 +40,7 @@ export type PluginLoadOptions = {
   coreGatewayHandlers?: Record<string, GatewayRequestHandler>;
   cache?: boolean;
   mode?: "full" | "validate";
+  trustAllowlistMode?: "enforce" | "warn";
 };
 
 const registryCache = new Map<string, PluginRegistry>();
@@ -237,6 +238,30 @@ type PluginProvenanceIndex = {
   installRules: Map<string, InstallTrackingRule>;
 };
 
+function requiresExplicitAllowlistForOrigin(origin: PluginRecord["origin"]): boolean {
+  // Configured load paths are treated as explicit trust decisions by the operator.
+  // Auto-discovered workspace/global plugins must be allowlisted.
+  return origin === "workspace" || origin === "global";
+}
+
+function resolveTrustAllowlistMode(params: {
+  mode: PluginLoadOptions["mode"];
+  explicit?: PluginLoadOptions["trustAllowlistMode"];
+  env?: NodeJS.ProcessEnv;
+}): "enforce" | "warn" {
+  if (params.explicit === "enforce" || params.explicit === "warn") {
+    return params.explicit;
+  }
+  const fromEnv = params.env?.OPENCLAW_PLUGIN_TRUST_ALLOWLIST_MODE?.trim().toLowerCase();
+  if (fromEnv === "warn") {
+    return "warn";
+  }
+  if (params.mode === "validate") {
+    return "warn";
+  }
+  return "enforce";
+}
+
 function createPathMatcher(): PathMatcher {
   return { exact: new Set<string>(), dirs: [] };
 }
@@ -322,6 +347,7 @@ function warnWhenAllowlistIsOpen(params: {
   logger: PluginLogger;
   pluginsEnabled: boolean;
   allow: string[];
+  trustAllowlistMode: "enforce" | "warn";
   discoverablePlugins: Array<{ id: string; source: string; origin: PluginRecord["origin"] }>;
 }) {
   if (!params.pluginsEnabled) {
@@ -330,18 +356,27 @@ function warnWhenAllowlistIsOpen(params: {
   if (params.allow.length > 0) {
     return;
   }
-  const nonBundled = params.discoverablePlugins.filter((entry) => entry.origin !== "bundled");
-  if (nonBundled.length === 0) {
+  const untrustedDiscoverable = params.discoverablePlugins.filter((entry) =>
+    requiresExplicitAllowlistForOrigin(entry.origin),
+  );
+  if (untrustedDiscoverable.length === 0) {
     return;
   }
-  const preview = nonBundled
+  const preview = untrustedDiscoverable
     .slice(0, 6)
     .map((entry) => `${entry.id} (${entry.source})`)
     .join(", ");
-  const extra = nonBundled.length > 6 ? ` (+${nonBundled.length - 6} more)` : "";
-  params.logger.warn(
-    `[plugins] plugins.allow is empty; discovered non-bundled plugins may auto-load: ${preview}${extra}. Set plugins.allow to explicit trusted ids.`,
-  );
+  const extra =
+    untrustedDiscoverable.length > 6 ? ` (+${untrustedDiscoverable.length - 6} more)` : "";
+  if (params.trustAllowlistMode === "enforce") {
+    params.logger.warn(
+      `[plugins] plugins.allow is empty; auto-discovered plugins are blocked until trusted: ${preview}${extra}. Add plugin ids to plugins.allow.`,
+    );
+  } else {
+    params.logger.warn(
+      `[plugins] plugins.allow is empty; auto-discovered plugins may load without explicit trust: ${preview}${extra}. Set plugins.allow to explicit trusted ids.`,
+    );
+  }
 }
 
 function warnAboutUntrackedLoadedPlugins(params: {
@@ -385,6 +420,11 @@ export function loadOpenClawPlugins(options: PluginLoadOptions = {}): PluginRegi
   const cfg = applyTestPluginDefaults(options.config ?? {}, process.env);
   const logger = options.logger ?? defaultLogger();
   const validateOnly = options.mode === "validate";
+  const trustAllowlistMode = resolveTrustAllowlistMode({
+    mode: options.mode,
+    explicit: options.trustAllowlistMode,
+    env: process.env,
+  });
   const normalized = normalizePluginsConfig(cfg.plugins);
   const cacheKey = buildCacheKey({
     workspaceDir: options.workspaceDir,
@@ -457,6 +497,7 @@ export function loadOpenClawPlugins(options: PluginLoadOptions = {}): PluginRegi
     logger,
     pluginsEnabled: normalized.enabled,
     allow: normalized.allow,
+    trustAllowlistMode,
     discoverablePlugins: manifestRegistry.plugins.map((plugin) => ({
       id: plugin.id,
       source: plugin.source,
@@ -571,6 +612,26 @@ export function loadOpenClawPlugins(options: PluginLoadOptions = {}): PluginRegi
       record.error = enableState.reason;
       registry.plugins.push(record);
       seenIds.set(pluginId, candidate.origin);
+      continue;
+    }
+
+    if (
+      trustAllowlistMode === "enforce" &&
+      normalized.allow.length === 0 &&
+      !validateOnly &&
+      requiresExplicitAllowlistForOrigin(candidate.origin)
+    ) {
+      record.status = "disabled";
+      record.error = "blocked by trust policy (plugins.allow required)";
+      registry.plugins.push(record);
+      seenIds.set(pluginId, candidate.origin);
+      registry.diagnostics.push({
+        level: "warn",
+        pluginId: record.id,
+        source: record.source,
+        message:
+          "blocked by trust policy: auto-discovered plugins require explicit plugins.allow entries",
+      });
       continue;
     }
 

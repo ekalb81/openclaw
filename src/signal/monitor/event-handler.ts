@@ -1,6 +1,9 @@
 import { resolveHumanDelayConfig } from "../../agents/identity.js";
 import { hasControlCommand } from "../../auto-reply/command-detection.js";
-import { dispatchInboundMessage } from "../../auto-reply/dispatch.js";
+import {
+  clearPendingGroupHistoryAfterDispatch,
+  dispatchInboundMessage,
+} from "../../auto-reply/dispatch.js";
 import {
   formatInboundEnvelope,
   formatInboundFromLabel,
@@ -8,7 +11,6 @@ import {
 } from "../../auto-reply/envelope.js";
 import {
   buildPendingHistoryContextFromMap,
-  clearHistoryEntriesIfEnabled,
   recordPendingHistoryEntryIfEnabled,
 } from "../../auto-reply/reply/history.js";
 import { finalizeInboundContext } from "../../auto-reply/reply/inbound-context.js";
@@ -278,22 +280,14 @@ export function createSignalEventHandler(deps: SignalEventHandlerDeps) {
       },
     });
     markDispatchIdle();
+    clearPendingGroupHistoryAfterDispatch({
+      isGroup: entry.isGroup,
+      historyKey,
+      historyLimit: deps.historyLimit,
+      historyMap: deps.groupHistories,
+    });
     if (!queuedFinal) {
-      if (entry.isGroup && historyKey) {
-        clearHistoryEntriesIfEnabled({
-          historyMap: deps.groupHistories,
-          historyKey,
-          limit: deps.historyLimit,
-        });
-      }
       return;
-    }
-    if (entry.isGroup && historyKey) {
-      clearHistoryEntriesIfEnabled({
-        historyMap: deps.groupHistories,
-        historyKey,
-        limit: deps.historyLimit,
-      });
     }
   }
 

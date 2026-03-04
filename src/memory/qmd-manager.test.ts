@@ -1871,6 +1871,12 @@ describe("QmdMemoryManager", () => {
       "path required",
     );
 
+    if (process.platform === "win32") {
+      // File symlinks require SeCreateSymbolicLinkPrivilege on Windows hosts.
+      await manager.close();
+      return;
+    }
+
     const target = path.join(workspaceDir, "target.md");
     await fs.writeFile(target, "ok", "utf-8");
     const link = path.join(workspaceDir, "link.md");

@@ -445,6 +445,13 @@ function renderUsageInsights(
     value: formatCost(entry.totals.totalCost),
     sub: formatTokens(entry.totals.totalTokens),
   }));
+  const promptFootprint = aggregates.promptFootprint;
+  const promptProfiles =
+    promptFootprint?.profiles.slice(0, 5).map((profile) => ({
+      label: profile.profile,
+      value: `${profile.turns} turns`,
+      sub: `${formatTokens(profile.avgEstimatedTokens)} avg`,
+    })) ?? [];
 
   return html`
     <section class="card" style="margin-top: 16px;">
@@ -502,6 +509,26 @@ function renderUsageInsights(
         </div>
         <div class="usage-summary-card">
           <div class="usage-summary-title">
+            Prompt Footprint
+            <span
+              class="usage-summary-hint"
+              title="Estimated input tokens before dispatch, captured per turn."
+              >?</span
+            >
+          </div>
+          <div class="usage-summary-value">
+            ${promptFootprint ? formatTokens(promptFootprint.avgEstimatedTokens) : "0"}
+          </div>
+          <div class="usage-summary-sub">
+            ${
+              promptFootprint
+                ? `${promptFootprint.turns} turns · ${promptFootprint.blockedTurns} blocked`
+                : "No prompt footprint data"
+            }
+          </div>
+        </div>
+        <div class="usage-summary-card">
+          <div class="usage-summary-title">
             Throughput
             <span class="usage-summary-hint" title=${throughputHint}>?</span>
           </div>
@@ -535,6 +562,7 @@ function renderUsageInsights(
         ${renderInsightList("Top Tools", topTools, "No tool calls")}
         ${renderInsightList("Top Agents", topAgents, "No agent data")}
         ${renderInsightList("Top Channels", topChannels, "No channel data")}
+        ${renderInsightList("Prompt Profiles", promptProfiles, "No prompt profile data")}
         ${renderPeakErrorList("Peak Error Days", errorDays, "No error data")}
         ${renderPeakErrorList("Peak Error Hours", errorHours, "No error data")}
       </div>

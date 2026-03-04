@@ -19,7 +19,7 @@ export function extractText(message: unknown): string | null {
   const m = message as Record<string, unknown>;
   const role = typeof m.role === "string" ? m.role : "";
   const raw = extractRawText(message);
-  if (!raw) {
+  if (raw === null) {
     return null;
   }
   return processMessageText(raw, role);

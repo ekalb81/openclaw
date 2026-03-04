@@ -162,11 +162,13 @@ export async function gatewayStatusCommand(
               auth,
               timeoutMs,
             });
+            const restartTelemetry = extractChannelRestartTelemetryFromStatus(probe.status);
+            const restartSummary = summarizeChannelRestartTelemetry(restartTelemetry);
             const configSummary = probe.configSnapshot
               ? extractConfigSummary(probe.configSnapshot)
               : null;
             const self = pickGatewaySelfPresence(probe.presence);
-            return { target, probe, configSummary, self };
+            return { target, probe, restartTelemetry, restartSummary, configSummary, self };
           }),
         );
 
@@ -261,6 +263,8 @@ export async function gatewayStatusCommand(
             config: p.configSummary,
             health: p.probe.health,
             summary: p.probe.status,
+            channelRestartTelemetry: p.restartTelemetry,
+            channelRestartSummary: p.restartSummary,
             presence: p.probe.presence,
           })),
         },
@@ -335,12 +339,70 @@ export async function gatewayStatusCommand(
             : "unknown";
       runtime.log(`  ${colorize(rich, theme.info, "Wide-area discovery")}: ${wideArea}`);
     }
+    if (p.restartSummary.accounts > 0) {
+      runtime.log(
+        `  ${colorize(rich, theme.info, "Channel restarts")}: retrying ${p.restartSummary.retrying}, exhausted ${p.restartSummary.exhausted}, manual ${p.restartSummary.manuallyStopped}`,
+      );
+    }
     runtime.log("");
   }
 
   if (!ok) {
     runtime.exit(1);
   }
+}
+
+function extractChannelRestartTelemetryFromStatus(value: unknown): unknown {
+  if (!value || typeof value !== "object") {
+    return {};
+  }
+  const telemetry = (value as { channelRestartTelemetry?: unknown }).channelRestartTelemetry;
+  if (!telemetry || typeof telemetry !== "object") {
+    return {};
+  }
+  return telemetry;
+}
+
+function summarizeChannelRestartTelemetry(value: unknown): {
+  accounts: number;
+  retrying: number;
+  exhausted: number;
+  manuallyStopped: number;
+} {
+  if (!value || typeof value !== "object") {
+    return { accounts: 0, retrying: 0, exhausted: 0, manuallyStopped: 0 };
+  }
+  const channels = Object.values(value as Record<string, unknown>).filter(
+    (entry): entry is Record<string, unknown> => Boolean(entry && typeof entry === "object"),
+  );
+  const accounts = channels.flatMap((channel) => Object.values(channel));
+  let retrying = 0;
+  let exhausted = 0;
+  let manuallyStopped = 0;
+  for (const account of accounts) {
+    if (!account || typeof account !== "object") {
+      continue;
+    }
+    const attempts =
+      typeof (account as { attempts?: unknown }).attempts === "number"
+        ? ((account as { attempts: number }).attempts ?? 0)
+        : 0;
+    if (attempts > 0) {
+      retrying += 1;
+    }
+    if ((account as { exhausted?: unknown }).exhausted === true) {
+      exhausted += 1;
+    }
+    if ((account as { manuallyStopped?: unknown }).manuallyStopped === true) {
+      manuallyStopped += 1;
+    }
+  }
+  return {
+    accounts: accounts.length,
+    retrying,
+    exhausted,
+    manuallyStopped,
+  };
 }
 
 function inferSshTargetFromRemoteUrl(rawUrl?: string | null): string | null {

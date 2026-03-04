@@ -49,6 +49,9 @@ export default defineConfig({
       "src/**/*.test.ts",
       "extensions/**/*.test.ts",
       "test/**/*.test.ts",
+      // Keep reliability-critical UI suite that runs in Node in the default CI lane.
+      "ui/src/ui/app-gateway.node.test.ts",
+      "ui/src/ui/app-settings.test.ts",
       "ui/src/ui/views/agents-utils.test.ts",
       "ui/src/ui/views/usage-render-details.test.ts",
       "ui/src/ui/controllers/agents.test.ts",
@@ -103,8 +106,6 @@ export default defineConfig({
         // Large integration surfaces; validated via e2e/manual/contract tests.
         "src/acp/**",
         "src/agents/**",
-        "src/channels/**",
-        "src/gateway/**",
         "src/line/**",
         "src/media-understanding/**",
         "src/node-host/**",

@@ -61,6 +61,59 @@ type SettingsHost = {
   pendingGatewayUrl?: string | null;
 };
 
+const DEFAULT_CHAT_GAP_RECOVERY_DELAY_MS = 600;
+const MAX_CHAT_GAP_RECOVERY_DELAY_MS = 10_000;
+const DEFAULT_CHAT_RUN_WATCHDOG_MS = 60_000;
+const MIN_CHAT_RUN_WATCHDOG_MS = 5_000;
+const MAX_CHAT_RUN_WATCHDOG_MS = 15 * 60_000;
+
+export type ChatReliabilitySettings = {
+  autoRecoverOnGap: boolean;
+  gapRecoveryDelayMs: number;
+  runWatchdogEnabled: boolean;
+  runWatchdogMs: number;
+};
+
+function clampNumber(value: number, min: number, max: number): number {
+  return Math.min(max, Math.max(min, value));
+}
+
+function readOptionalNumber(value: unknown): number | null {
+  return typeof value === "number" && Number.isFinite(value) ? value : null;
+}
+
+function readOptionalBoolean(value: unknown): boolean | null {
+  return typeof value === "boolean" ? value : null;
+}
+
+/**
+ * Reliability controls are intentionally settings-driven, but optional.
+ * We read them dynamically so existing stored settings stay backwards-compatible.
+ */
+export function resolveChatReliabilitySettings(settings: UiSettings): ChatReliabilitySettings {
+  const bag = settings as unknown as Record<string, unknown>;
+  const autoRecoverOnGap = readOptionalBoolean(bag.chatAutoRecoverOnGap) ?? true;
+  const gapRecoveryDelayRaw = readOptionalNumber(bag.chatAutoRecoverGapDelayMs);
+  const gapRecoveryDelayMs = clampNumber(
+    gapRecoveryDelayRaw ?? DEFAULT_CHAT_GAP_RECOVERY_DELAY_MS,
+    0,
+    MAX_CHAT_GAP_RECOVERY_DELAY_MS,
+  );
+  const runWatchdogEnabled = readOptionalBoolean(bag.chatRunWatchdogEnabled) ?? true;
+  const runWatchdogRaw = readOptionalNumber(bag.chatRunWatchdogMs);
+  const runWatchdogMs = clampNumber(
+    runWatchdogRaw ?? DEFAULT_CHAT_RUN_WATCHDOG_MS,
+    MIN_CHAT_RUN_WATCHDOG_MS,
+    MAX_CHAT_RUN_WATCHDOG_MS,
+  );
+  return {
+    autoRecoverOnGap,
+    gapRecoveryDelayMs,
+    runWatchdogEnabled,
+    runWatchdogMs,
+  };
+}
+
 export function applySettings(host: SettingsHost, next: UiSettings) {
   const normalized = {
     ...next,
@@ -98,6 +151,14 @@ export function applySettingsFromUrl(host: SettingsHost) {
   const passwordRaw = params.get("password") ?? hashParams.get("password");
   const sessionRaw = params.get("session") ?? hashParams.get("session");
   const gatewayUrlRaw = params.get("gatewayUrl") ?? hashParams.get("gatewayUrl");
+  const chatAutoRecoverOnGapRaw =
+    params.get("chatAutoRecoverOnGap") ?? hashParams.get("chatAutoRecoverOnGap");
+  const chatAutoRecoverGapDelayMsRaw =
+    params.get("chatAutoRecoverGapDelayMs") ?? hashParams.get("chatAutoRecoverGapDelayMs");
+  const chatRunWatchdogEnabledRaw =
+    params.get("chatRunWatchdogEnabled") ?? hashParams.get("chatRunWatchdogEnabled");
+  const chatRunWatchdogMsRaw =
+    params.get("chatRunWatchdogMs") ?? hashParams.get("chatRunWatchdogMs");
   let shouldCleanUrl = false;
 
   if (tokenRaw != null) {
@@ -137,6 +198,71 @@ export function applySettingsFromUrl(host: SettingsHost) {
     params.delete("gatewayUrl");
     hashParams.delete("gatewayUrl");
     shouldCleanUrl = true;
+  }
+
+  const reliabilityOverrides: Record<string, unknown> = {};
+  if (chatAutoRecoverOnGapRaw != null) {
+    const normalized = chatAutoRecoverOnGapRaw.trim().toLowerCase();
+    if (
+      normalized === "true" ||
+      normalized === "1" ||
+      normalized === "yes" ||
+      normalized === "on"
+    ) {
+      reliabilityOverrides.chatAutoRecoverOnGap = true;
+    } else if (
+      normalized === "false" ||
+      normalized === "0" ||
+      normalized === "no" ||
+      normalized === "off"
+    ) {
+      reliabilityOverrides.chatAutoRecoverOnGap = false;
+    }
+    params.delete("chatAutoRecoverOnGap");
+    hashParams.delete("chatAutoRecoverOnGap");
+    shouldCleanUrl = true;
+  }
+  if (chatAutoRecoverGapDelayMsRaw != null) {
+    const parsed = Number(chatAutoRecoverGapDelayMsRaw.trim());
+    if (Number.isFinite(parsed)) {
+      reliabilityOverrides.chatAutoRecoverGapDelayMs = parsed;
+    }
+    params.delete("chatAutoRecoverGapDelayMs");
+    hashParams.delete("chatAutoRecoverGapDelayMs");
+    shouldCleanUrl = true;
+  }
+  if (chatRunWatchdogEnabledRaw != null) {
+    const normalized = chatRunWatchdogEnabledRaw.trim().toLowerCase();
+    if (
+      normalized === "true" ||
+      normalized === "1" ||
+      normalized === "yes" ||
+      normalized === "on"
+    ) {
+      reliabilityOverrides.chatRunWatchdogEnabled = true;
+    } else if (
+      normalized === "false" ||
+      normalized === "0" ||
+      normalized === "no" ||
+      normalized === "off"
+    ) {
+      reliabilityOverrides.chatRunWatchdogEnabled = false;
+    }
+    params.delete("chatRunWatchdogEnabled");
+    hashParams.delete("chatRunWatchdogEnabled");
+    shouldCleanUrl = true;
+  }
+  if (chatRunWatchdogMsRaw != null) {
+    const parsed = Number(chatRunWatchdogMsRaw.trim());
+    if (Number.isFinite(parsed)) {
+      reliabilityOverrides.chatRunWatchdogMs = parsed;
+    }
+    params.delete("chatRunWatchdogMs");
+    hashParams.delete("chatRunWatchdogMs");
+    shouldCleanUrl = true;
+  }
+  if (Object.keys(reliabilityOverrides).length > 0) {
+    applySettings(host, { ...host.settings, ...reliabilityOverrides } as UiSettings);
   }
 
   if (!shouldCleanUrl) {

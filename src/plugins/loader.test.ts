@@ -804,25 +804,128 @@ describe("loadOpenClawPlugins", () => {
     });
   });
 
-  it("warns when plugins.allow is empty and non-bundled plugins are discoverable", () => {
+  it("blocks auto-discovered plugins when plugins.allow is empty", () => {
+    useNoBundledPlugins();
+    const stateDir = makeTempDir();
+    withEnv({ OPENCLAW_STATE_DIR: stateDir, CLAWDBOT_STATE_DIR: undefined }, () => {
+      const workspaceDir = path.join(stateDir, "workspace");
+      const workspacePluginDir = path.join(workspaceDir, ".openclaw", "extensions", "rogue");
+      fs.mkdirSync(workspacePluginDir, { recursive: true });
+      writePlugin({
+        id: "rogue",
+        body: `module.exports = { id: "rogue", register() {} };`,
+        dir: workspacePluginDir,
+        filename: "index.cjs",
+      });
+
+      const warnings: string[] = [];
+      const registry = loadOpenClawPlugins({
+        cache: false,
+        logger: createWarningLogger(warnings),
+        workspaceDir,
+        config: {
+          plugins: {
+            enabled: true,
+          },
+        },
+      });
+
+      const rogue = registry.plugins.find((entry) => entry.id === "rogue");
+      expect(rogue?.status).toBe("disabled");
+      expect(rogue?.error).toContain("blocked by trust policy");
+      expect(
+        registry.diagnostics.some((entry) =>
+          entry.message.includes("auto-discovered plugins require explicit plugins.allow"),
+        ),
+      ).toBe(true);
+      expect(
+        warnings.some(
+          (message) =>
+            message.includes("plugins.allow is empty") &&
+            message.includes("blocked") &&
+            message.includes("rogue"),
+        ),
+      ).toBe(true);
+    });
+  });
+
+  it("allows auto-discovered plugins when explicitly trusted in plugins.allow", () => {
+    useNoBundledPlugins();
+    const stateDir = makeTempDir();
+    withEnv({ OPENCLAW_STATE_DIR: stateDir, CLAWDBOT_STATE_DIR: undefined }, () => {
+      const workspaceDir = path.join(stateDir, "workspace");
+      const workspacePluginDir = path.join(workspaceDir, ".openclaw", "extensions", "trusted");
+      fs.mkdirSync(workspacePluginDir, { recursive: true });
+      writePlugin({
+        id: "trusted",
+        body: `module.exports = { id: "trusted", register() {} };`,
+        dir: workspacePluginDir,
+        filename: "index.cjs",
+      });
+
+      const registry = loadOpenClawPlugins({
+        cache: false,
+        workspaceDir,
+        config: {
+          plugins: {
+            allow: ["trusted"],
+          },
+        },
+      });
+
+      const trusted = registry.plugins.find((entry) => entry.id === "trusted");
+      expect(trusted?.status).toBe("loaded");
+    });
+  });
+
+  it("treats explicit plugins.load.paths as trusted load sources without plugins.allow", () => {
     useNoBundledPlugins();
     const plugin = writePlugin({
-      id: "warn-open-allow",
-      body: `module.exports = { id: "warn-open-allow", register() {} };`,
+      id: "config-path-plugin",
+      body: `module.exports = { id: "config-path-plugin", register() {} };`,
     });
-    const warnings: string[] = [];
-    loadOpenClawPlugins({
+
+    const registry = loadOpenClawPlugins({
       cache: false,
-      logger: createWarningLogger(warnings),
       config: {
         plugins: {
           load: { paths: [plugin.file] },
         },
       },
     });
-    expect(
-      warnings.some((msg) => msg.includes("plugins.allow is empty") && msg.includes(plugin.id)),
-    ).toBe(true);
+
+    const loaded = registry.plugins.find((entry) => entry.id === "config-path-plugin");
+    expect(loaded?.status).toBe("loaded");
+  });
+
+  it("supports trustAllowlistMode=warn for migration workflows", () => {
+    useNoBundledPlugins();
+    const stateDir = makeTempDir();
+    withEnv({ OPENCLAW_STATE_DIR: stateDir, CLAWDBOT_STATE_DIR: undefined }, () => {
+      const workspaceDir = path.join(stateDir, "workspace");
+      const workspacePluginDir = path.join(workspaceDir, ".openclaw", "extensions", "warn-only");
+      fs.mkdirSync(workspacePluginDir, { recursive: true });
+      writePlugin({
+        id: "warn-only",
+        body: `module.exports = { id: "warn-only", register() {} };`,
+        dir: workspacePluginDir,
+        filename: "index.cjs",
+      });
+
+      const registry = loadOpenClawPlugins({
+        cache: false,
+        workspaceDir,
+        trustAllowlistMode: "warn",
+        config: {
+          plugins: {
+            enabled: true,
+          },
+        },
+      });
+
+      const warnOnly = registry.plugins.find((entry) => entry.id === "warn-only");
+      expect(warnOnly?.status).toBe("loaded");
+    });
   });
 
   it("warns when loaded non-bundled plugin has no install/load-path provenance", () => {

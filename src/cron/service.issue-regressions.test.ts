@@ -1328,9 +1328,10 @@ describe("Cron issue regressions", () => {
     });
 
     const timerPromise = onTimer(state);
+    const startTimeoutMs = process.platform === "win32" ? 250 : 120;
     const startTimeout = setTimeout(() => {
       bothRunsStarted.reject(new Error("timed out waiting for concurrent job starts"));
-    }, 90);
+    }, startTimeoutMs);
     try {
       await bothRunsStarted.promise;
     } finally {

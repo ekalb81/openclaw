@@ -152,6 +152,62 @@ describe("web auto-reply connection", () => {
     }
   });
 
+  it("retries listener startup failures before connecting", async () => {
+    const closeResolvers: Array<(reason?: unknown) => void> = [];
+    const sleep = vi.fn(async () => {});
+    let attempts = 0;
+    const listenerFactory = vi.fn(async () => {
+      attempts += 1;
+      if (attempts === 1) {
+        throw new Error("startup exploded");
+      }
+      const onClose = new Promise<unknown>((res) => {
+        closeResolvers.push(res);
+      });
+      return { close: vi.fn(), onClose };
+    });
+    const { runtime, controller, run } = startMonitorWebChannel({
+      monitorWebChannelFn: monitorWebChannel as never,
+      listenerFactory,
+      sleep,
+      reconnect: { initialMs: 10, maxMs: 10, maxAttempts: 3, factor: 1.1 },
+    });
+
+    await vi.waitFor(
+      () => {
+        expect(listenerFactory).toHaveBeenCalledTimes(2);
+      },
+      { timeout: 250, interval: 2 },
+    );
+    expect(sleep).toHaveBeenCalledTimes(1);
+    expect(runtime.error).toHaveBeenCalledWith(
+      expect.stringContaining("listener startup failed. Retry 1"),
+    );
+
+    controller.abort();
+    closeResolvers[0]?.({ status: 499, isLoggedOut: false, error: "aborted" });
+    await run;
+  });
+
+  it("stops when startup failures hit reconnect max attempts", async () => {
+    const sleep = vi.fn(async () => {});
+    const listenerFactory = vi.fn(async () => {
+      throw new Error("startup exploded");
+    });
+    const { runtime, run } = startMonitorWebChannel({
+      monitorWebChannelFn: monitorWebChannel as never,
+      listenerFactory,
+      sleep,
+      reconnect: { initialMs: 10, maxMs: 10, maxAttempts: 2, factor: 1.1 },
+    });
+
+    await run;
+
+    expect(listenerFactory).toHaveBeenCalledTimes(2);
+    expect(sleep).toHaveBeenCalledTimes(1);
+    expect(runtime.error).toHaveBeenCalledWith(expect.stringContaining("max attempts reached"));
+  });
+
   it("treats status 440 as non-retryable and stops without retrying", async () => {
     const closeResolvers: Array<(reason?: unknown) => void> = [];
     const sleep = vi.fn(async () => {});

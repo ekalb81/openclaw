@@ -134,12 +134,14 @@ but can be disabled the same way.
 
 Hardening notes:
 
-- If `plugins.allow` is empty and non-bundled plugins are discoverable, OpenClaw logs a startup warning with plugin ids and sources.
+- Auto-discovered workspace/global plugins require explicit `plugins.allow` entries before they load.
+- Temporary migration override: set `OPENCLAW_PLUGIN_TRUST_ALLOWLIST_MODE=warn` to keep warning-only behavior while building an allowlist.
 - Candidate paths are safety-checked before discovery admission. OpenClaw blocks candidates when:
   - extension entry resolves outside plugin root (including symlink/path traversal escapes),
   - plugin root/source path is world-writable,
   - path ownership is suspicious for non-bundled plugins (POSIX owner is neither current uid nor root).
 - Loaded non-bundled plugins without install/load-path provenance emit a warning so you can pin trust (`plugins.allow`) or install tracking (`plugins.installs`).
+- Run `openclaw plugins lint-policy` before release/deploy to catch trust and packaging policy issues early.
 
 Each plugin must include a `openclaw.plugin.json` file in its root. If a path
 points at a file, the plugin root is the file's directory and must contain the
@@ -330,10 +332,14 @@ openclaw plugins update --all
 openclaw plugins enable <id>
 openclaw plugins disable <id>
 openclaw plugins doctor
+openclaw plugins lint-policy
 ```
 
 `plugins update` only works for npm installs tracked under `plugins.installs`.
 If stored integrity metadata changes between updates, OpenClaw warns and asks for confirmation (use global `--yes` to bypass prompts).
+
+`plugins lint-policy` runs checks for manifest/discovery diagnostics, trust allowlist coverage,
+and dependency policy issues like runtime `workspace:*` specs.
 
 Plugins may also register their own top‑level commands (example: `openclaw voicecall`).
 

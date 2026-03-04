@@ -370,6 +370,21 @@ const buildAggregatesFromSessions = (
     { date: string; provider?: string; model?: string; tokens: number; cost: number; count: number }
   >();
   const latencyTotals = { count: 0, sum: 0, min: Number.POSITIVE_INFINITY, max: 0, p95Max: 0 };
+  let promptTurns = 0;
+  let promptBlockedTurns = 0;
+  let promptChangedTurns = 0;
+  let promptEstimatedTokensSum = 0;
+  let promptMaxEstimatedTokens = 0;
+  const promptProfiles = new Map<
+    string,
+    {
+      turns: number;
+      blockedTurns: number;
+      changedTurns: number;
+      estimatedTokensSum: number;
+      maxEstimatedTokens: number;
+    }
+  >();
 
   for (const session of sessions) {
     const usage = session.usage;
@@ -473,6 +488,36 @@ const buildAggregatesFromSessions = (
       existing.count += day.count;
       modelDailyMap.set(key, existing);
     }
+
+    const promptFootprint = session.promptFootprint;
+    if (promptFootprint) {
+      promptTurns += promptFootprint.turns;
+      promptBlockedTurns += promptFootprint.blockedTurns;
+      promptChangedTurns += promptFootprint.changedTurns;
+      promptEstimatedTokensSum += promptFootprint.avgEstimatedTokens * promptFootprint.turns;
+      promptMaxEstimatedTokens = Math.max(
+        promptMaxEstimatedTokens,
+        promptFootprint.maxEstimatedTokens,
+      );
+      for (const profile of promptFootprint.profiles ?? []) {
+        const existing = promptProfiles.get(profile.profile) ?? {
+          turns: 0,
+          blockedTurns: 0,
+          changedTurns: 0,
+          estimatedTokensSum: 0,
+          maxEstimatedTokens: 0,
+        };
+        existing.turns += profile.turns;
+        existing.blockedTurns += profile.blockedTurns;
+        existing.changedTurns += profile.changedTurns;
+        existing.estimatedTokensSum += profile.avgEstimatedTokens * profile.turns;
+        existing.maxEstimatedTokens = Math.max(
+          existing.maxEstimatedTokens,
+          profile.maxEstimatedTokens,
+        );
+        promptProfiles.set(profile.profile, existing);
+      }
+    }
   }
 
   const tail = buildUsageAggregateTail({
@@ -501,6 +546,27 @@ const buildAggregatesFromSessions = (
     byAgent: Array.from(agentMap.entries())
       .map(([agentId, totals]) => ({ agentId, totals }))
       .toSorted((a, b) => b.totals.totalCost - a.totals.totalCost),
+    promptFootprint:
+      promptTurns > 0
+        ? {
+            turns: promptTurns,
+            blockedTurns: promptBlockedTurns,
+            changedTurns: promptChangedTurns,
+            avgEstimatedTokens: Math.round(promptEstimatedTokensSum / promptTurns),
+            maxEstimatedTokens: promptMaxEstimatedTokens,
+            profiles: Array.from(promptProfiles.entries())
+              .map(([profile, values]) => ({
+                profile,
+                turns: values.turns,
+                blockedTurns: values.blockedTurns,
+                changedTurns: values.changedTurns,
+                avgEstimatedTokens:
+                  values.turns > 0 ? Math.round(values.estimatedTokensSum / values.turns) : 0,
+                maxEstimatedTokens: values.maxEstimatedTokens,
+              }))
+              .toSorted((a, b) => b.turns - a.turns || b.maxEstimatedTokens - a.maxEstimatedTokens),
+          }
+        : undefined,
     ...tail,
   };
 };

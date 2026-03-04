@@ -4,6 +4,10 @@ import type { ChatAttachment } from "../ui-types.ts";
 import { generateUUID } from "../uuid.ts";
 
 const SILENT_REPLY_PATTERN = /^\s*NO_REPLY\s*$/;
+const MAIN_SESSION_ALIAS = "agent:main:main";
+const DEFAULT_CHAT_RUN_WATCHDOG_MS = 60_000;
+const MIN_CHAT_RUN_WATCHDOG_MS = 5_000;
+const MAX_CHAT_RUN_WATCHDOG_MS = 15 * 60_000;
 
 function isSilentReplyStream(text: string): boolean {
   return SILENT_REPLY_PATTERN.test(text);
@@ -39,6 +43,9 @@ export type ChatState = {
   chatRunId: string | null;
   chatStream: string | null;
   chatStreamStartedAt: number | null;
+  chatRunWatchdogTimer?: ReturnType<typeof setTimeout> | null;
+  chatRunWatchdogLastActivityAtMs?: number | null;
+  chatRunWatchdogRecoveryInFlight?: boolean;
   lastError: string | null;
 };
 
@@ -49,6 +56,104 @@ export type ChatEventPayload = {
   message?: unknown;
   errorMessage?: string;
 };
+
+function normalizeMainSessionAlias(value: string | null | undefined): string {
+  const normalized = (value ?? "").trim().toLowerCase();
+  if (!normalized) {
+    return "";
+  }
+  return normalized === MAIN_SESSION_ALIAS ? "main" : normalized;
+}
+
+function sessionKeysMatch(left: string, right: string): boolean {
+  if (left === right) {
+    return true;
+  }
+  return normalizeMainSessionAlias(left) === normalizeMainSessionAlias(right);
+}
+
+function cancelRunWatchdogTimer(state: ChatState) {
+  const timer = state.chatRunWatchdogTimer ?? null;
+  if (timer !== null) {
+    clearTimeout(timer);
+  }
+  state.chatRunWatchdogTimer = null;
+}
+
+function clearRunWatchdog(state: ChatState) {
+  cancelRunWatchdogTimer(state);
+  state.chatRunWatchdogLastActivityAtMs = null;
+}
+
+function resolveRunWatchdogSettings(state: ChatState): { enabled: boolean; timeoutMs: number } {
+  const settings = (state as unknown as { settings?: Record<string, unknown> }).settings ?? {};
+  const enabled =
+    typeof settings.chatRunWatchdogEnabled === "boolean" ? settings.chatRunWatchdogEnabled : true;
+  const timeoutRaw =
+    typeof settings.chatRunWatchdogMs === "number" && Number.isFinite(settings.chatRunWatchdogMs)
+      ? settings.chatRunWatchdogMs
+      : DEFAULT_CHAT_RUN_WATCHDOG_MS;
+  const timeoutMs = Math.min(
+    MAX_CHAT_RUN_WATCHDOG_MS,
+    Math.max(MIN_CHAT_RUN_WATCHDOG_MS, timeoutRaw),
+  );
+  return { enabled, timeoutMs };
+}
+
+async function recoverFromRunWatchdog(state: ChatState) {
+  if (state.chatRunWatchdogRecoveryInFlight) {
+    return;
+  }
+  state.chatRunWatchdogRecoveryInFlight = true;
+  try {
+    await loadChatHistory(state);
+  } catch {
+    // best-effort recovery
+  } finally {
+    state.chatRunId = null;
+    state.chatStream = null;
+    state.chatStreamStartedAt = null;
+    clearRunWatchdog(state);
+    state.chatRunWatchdogRecoveryInFlight = false;
+  }
+}
+
+function scheduleRunWatchdog(state: ChatState) {
+  cancelRunWatchdogTimer(state);
+  if (!state.chatRunId) {
+    return;
+  }
+  const { enabled, timeoutMs } = resolveRunWatchdogSettings(state);
+  if (!enabled) {
+    return;
+  }
+  const runId = state.chatRunId;
+  const now = Date.now();
+  if (state.chatRunWatchdogLastActivityAtMs == null) {
+    state.chatRunWatchdogLastActivityAtMs = state.chatStreamStartedAt ?? now;
+  }
+  state.chatRunWatchdogTimer = setTimeout(() => {
+    if (state.chatRunId !== runId) {
+      return;
+    }
+    const lastActivityAt =
+      state.chatRunWatchdogLastActivityAtMs ?? state.chatStreamStartedAt ?? now;
+    const idleForMs = Date.now() - lastActivityAt;
+    if (idleForMs < timeoutMs) {
+      scheduleRunWatchdog(state);
+      return;
+    }
+    void recoverFromRunWatchdog(state);
+  }, timeoutMs);
+}
+
+function touchRunWatchdog(state: ChatState) {
+  if (!state.chatRunId) {
+    return;
+  }
+  state.chatRunWatchdogLastActivityAtMs = Date.now();
+  scheduleRunWatchdog(state);
+}
 
 export async function loadChatHistory(state: ChatState) {
   if (!state.client || !state.connected) {
@@ -177,6 +282,8 @@ export async function sendChatMessage(
   state.chatRunId = runId;
   state.chatStream = "";
   state.chatStreamStartedAt = now;
+  state.chatRunWatchdogLastActivityAtMs = now;
+  scheduleRunWatchdog(state);
 
   // Convert attachments to API format
   const apiAttachments = hasAttachments
@@ -209,6 +316,7 @@ export async function sendChatMessage(
     state.chatRunId = null;
     state.chatStream = null;
     state.chatStreamStartedAt = null;
+    clearRunWatchdog(state);
     state.lastError = error;
     state.chatMessages = [
       ...state.chatMessages,
@@ -245,7 +353,7 @@ export function handleChatEvent(state: ChatState, payload?: ChatEventPayload) {
   if (!payload) {
     return null;
   }
-  if (payload.sessionKey !== state.sessionKey) {
+  if (!sessionKeysMatch(payload.sessionKey, state.sessionKey)) {
     return null;
   }
 
@@ -264,6 +372,7 @@ export function handleChatEvent(state: ChatState, payload?: ChatEventPayload) {
   }
 
   if (payload.state === "delta") {
+    touchRunWatchdog(state);
     const next = extractText(payload.message);
     if (typeof next === "string" && !isSilentReplyStream(next)) {
       const current = state.chatStream ?? "";
@@ -288,6 +397,7 @@ export function handleChatEvent(state: ChatState, payload?: ChatEventPayload) {
     state.chatStream = null;
     state.chatRunId = null;
     state.chatStreamStartedAt = null;
+    clearRunWatchdog(state);
   } else if (payload.state === "aborted") {
     const normalizedMessage = normalizeAbortedAssistantMessage(payload.message);
     if (normalizedMessage && !isAssistantSilentReply(normalizedMessage)) {
@@ -308,10 +418,12 @@ export function handleChatEvent(state: ChatState, payload?: ChatEventPayload) {
     state.chatStream = null;
     state.chatRunId = null;
     state.chatStreamStartedAt = null;
+    clearRunWatchdog(state);
   } else if (payload.state === "error") {
     state.chatStream = null;
     state.chatRunId = null;
     state.chatStreamStartedAt = null;
+    clearRunWatchdog(state);
     state.lastError = payload.errorMessage ?? "chat error";
   }
   return payload.state;

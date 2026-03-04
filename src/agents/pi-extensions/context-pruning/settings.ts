@@ -5,9 +5,11 @@ export type ContextPruningToolMatch = {
   deny?: string[];
 };
 export type ContextPruningMode = "off" | "cache-ttl";
+export type ContextPruningPolicy = "eligible" | "all";
 
 export type ContextPruningConfig = {
   mode?: ContextPruningMode;
+  policy?: ContextPruningPolicy;
   /** TTL to consider cache expired (duration string, default unit: minutes). */
   ttl?: string;
   keepLastAssistants?: number;
@@ -28,6 +30,7 @@ export type ContextPruningConfig = {
 
 export type EffectiveContextPruningSettings = {
   mode: Exclude<ContextPruningMode, "off">;
+  policy: ContextPruningPolicy;
   ttlMs: number;
   keepLastAssistants: number;
   softTrimRatio: number;
@@ -47,6 +50,7 @@ export type EffectiveContextPruningSettings = {
 
 export const DEFAULT_CONTEXT_PRUNING_SETTINGS: EffectiveContextPruningSettings = {
   mode: "cache-ttl",
+  policy: "eligible",
   ttlMs: 5 * 60 * 1000,
   keepLastAssistants: 3,
   softTrimRatio: 0.3,
@@ -65,16 +69,17 @@ export const DEFAULT_CONTEXT_PRUNING_SETTINGS: EffectiveContextPruningSettings =
 };
 
 export function computeEffectiveSettings(raw: unknown): EffectiveContextPruningSettings | null {
-  if (!raw || typeof raw !== "object") {
-    return null;
-  }
-  const cfg = raw as ContextPruningConfig;
-  if (cfg.mode !== "cache-ttl") {
+  const cfg = raw && typeof raw === "object" ? (raw as ContextPruningConfig) : {};
+  if (cfg.mode === "off") {
     return null;
   }
 
   const s: EffectiveContextPruningSettings = structuredClone(DEFAULT_CONTEXT_PRUNING_SETTINGS);
-  s.mode = cfg.mode;
+  s.mode = "cache-ttl";
+
+  if (cfg.policy === "eligible" || cfg.policy === "all") {
+    s.policy = cfg.policy;
+  }
 
   if (typeof cfg.ttl === "string") {
     try {

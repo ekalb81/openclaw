@@ -8,6 +8,7 @@ import {
   applySettings,
   loadCron,
   refreshActiveTab,
+  resolveChatReliabilitySettings,
   setLastActiveSessionKey,
 } from "./app-settings.ts";
 import { handleAgentEvent, resetToolStream, type AgentEventPayload } from "./app-tool-stream.ts";
@@ -75,6 +76,7 @@ type GatewayHost = {
   execApprovalQueue: ExecApprovalRequest[];
   execApprovalError: string | null;
   updateAvailable: UpdateAvailable | null;
+  chatGapRecoveryTimer?: ReturnType<typeof setTimeout> | null;
 };
 
 type SessionDefaultsSnapshot = {
@@ -83,6 +85,13 @@ type SessionDefaultsSnapshot = {
   mainSessionKey?: string;
   scope?: string;
 };
+
+function resolveSessionDefaults(host: GatewayHost): SessionDefaultsSnapshot {
+  const snapshot = host.hello?.snapshot as
+    | { sessionDefaults?: SessionDefaultsSnapshot }
+    | undefined;
+  return snapshot?.sessionDefaults ?? {};
+}
 
 function normalizeSessionKeyForDefaults(
   value: string | undefined,
@@ -136,6 +145,56 @@ function applySessionDefaults(host: GatewayHost, defaults?: SessionDefaultsSnaps
   }
 }
 
+function normalizeChatEventPayloadSessionKey(
+  host: GatewayHost,
+  payload: ChatEventPayload | undefined,
+): ChatEventPayload | undefined {
+  if (!payload?.sessionKey) {
+    return payload;
+  }
+  const defaults = resolveSessionDefaults(host);
+  const normalizedPayloadKey = normalizeSessionKeyForDefaults(payload.sessionKey, defaults);
+  const normalizedHostKey = normalizeSessionKeyForDefaults(host.sessionKey, defaults);
+  if (!normalizedPayloadKey || normalizedPayloadKey !== normalizedHostKey) {
+    return payload;
+  }
+  if (payload.sessionKey === host.sessionKey) {
+    return payload;
+  }
+  return { ...payload, sessionKey: host.sessionKey };
+}
+
+function clearActiveChatRunState(host: GatewayHost) {
+  host.chatRunId = null;
+  (host as unknown as { chatStream: string | null }).chatStream = null;
+  (host as unknown as { chatStreamStartedAt: number | null }).chatStreamStartedAt = null;
+  (
+    host as unknown as { chatRunWatchdogLastActivityAtMs: number | null }
+  ).chatRunWatchdogLastActivityAtMs = null;
+}
+
+function clearPendingGapRecovery(host: GatewayHost) {
+  const timer = host.chatGapRecoveryTimer ?? null;
+  if (timer !== null) {
+    clearTimeout(timer);
+    host.chatGapRecoveryTimer = null;
+  }
+}
+
+async function recoverChatAfterEventGap(host: GatewayHost) {
+  clearActiveChatRunState(host);
+  resetToolStream(host as unknown as Parameters<typeof resetToolStream>[0]);
+  const client = host.client as { request?: unknown } | null;
+  if (!host.connected || !client || typeof client.request !== "function") {
+    return;
+  }
+  try {
+    await loadChatHistory(host as unknown as OpenClawApp);
+  } catch {
+    // best-effort recovery
+  }
+}
+
 export function connectGateway(host: GatewayHost) {
   host.lastError = null;
   host.lastErrorCode = null;
@@ -156,6 +215,7 @@ export function connectGateway(host: GatewayHost) {
       if (host.client !== client) {
         return;
       }
+      clearPendingGapRecovery(host);
       host.connected = true;
       host.lastError = null;
       host.lastErrorCode = null;
@@ -163,9 +223,7 @@ export function connectGateway(host: GatewayHost) {
       applySnapshot(host, hello);
       // Reset orphaned chat run state from before disconnect.
       // Any in-flight run's final event was lost during the disconnect window.
-      host.chatRunId = null;
-      (host as unknown as { chatStream: string | null }).chatStream = null;
-      (host as unknown as { chatStreamStartedAt: number | null }).chatStreamStartedAt = null;
+      clearActiveChatRunState(host);
       resetToolStream(host as unknown as Parameters<typeof resetToolStream>[0]);
       void loadAssistantIdentity(host as unknown as OpenClawApp);
       void loadAgents(host as unknown as OpenClawApp);
@@ -178,6 +236,7 @@ export function connectGateway(host: GatewayHost) {
       if (host.client !== client) {
         return;
       }
+      clearPendingGapRecovery(host);
       host.connected = false;
       // Code 1012 = Service Restart (expected during config saves, don't show as error)
       host.lastErrorCode =
@@ -206,6 +265,18 @@ export function connectGateway(host: GatewayHost) {
       }
       host.lastError = `event gap detected (expected seq ${expected}, got ${received}); refresh recommended`;
       host.lastErrorCode = null;
+      const reliability = resolveChatReliabilitySettings(host.settings);
+      if (!reliability.autoRecoverOnGap) {
+        return;
+      }
+      clearPendingGapRecovery(host);
+      host.chatGapRecoveryTimer = setTimeout(() => {
+        host.chatGapRecoveryTimer = null;
+        if (host.client !== client) {
+          return;
+        }
+        void recoverChatAfterEventGap(host);
+      }, reliability.gapRecoveryDelayMs);
     },
   });
   host.client = client;
@@ -244,15 +315,21 @@ function handleTerminalChatEvent(
 }
 
 function handleChatGatewayEvent(host: GatewayHost, payload: ChatEventPayload | undefined) {
-  if (payload?.sessionKey) {
+  const normalizedPayload = normalizeChatEventPayloadSessionKey(host, payload);
+  if (normalizedPayload?.sessionKey) {
     setLastActiveSessionKey(
       host as unknown as Parameters<typeof setLastActiveSessionKey>[0],
-      payload.sessionKey,
+      normalizedPayload.sessionKey,
     );
   }
-  const state = handleChatEvent(host as unknown as OpenClawApp, payload);
-  handleTerminalChatEvent(host, payload, state);
-  if (state === "final" && shouldReloadHistoryForFinalEvent(payload)) {
+  const state = handleChatEvent(host as unknown as OpenClawApp, normalizedPayload);
+  if (host.chatRunId) {
+    (
+      host as unknown as { chatRunWatchdogLastActivityAtMs: number }
+    ).chatRunWatchdogLastActivityAtMs = Date.now();
+  }
+  handleTerminalChatEvent(host, normalizedPayload, state);
+  if (state === "final" && shouldReloadHistoryForFinalEvent(normalizedPayload)) {
     void loadChatHistory(host as unknown as OpenClawApp);
   }
 }
@@ -267,6 +344,11 @@ function handleGatewayEventUnsafe(host: GatewayHost, evt: GatewayEventFrame) {
   }
 
   if (evt.event === "agent") {
+    if (host.chatRunId) {
+      (
+        host as unknown as { chatRunWatchdogLastActivityAtMs: number }
+      ).chatRunWatchdogLastActivityAtMs = Date.now();
+    }
     if (host.onboarding) {
       return;
     }

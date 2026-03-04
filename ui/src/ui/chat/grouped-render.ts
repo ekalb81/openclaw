@@ -246,13 +246,20 @@ function renderGroupedMessage(
   const markdownBase = extractedText?.trim() ? extractedText : null;
   const reasoningMarkdown = extractedThinking ? formatReasoningMarkdown(extractedThinking) : null;
   const markdown = markdownBase;
+  const normalizedRole = normalizeRoleForGrouping(role);
+  const showEmptyAssistantPlaceholder =
+    normalizedRole === "assistant" &&
+    !markdown &&
+    !reasoningMarkdown &&
+    !hasToolCards &&
+    !hasImages;
   const canCopyMarkdown = role === "assistant" && Boolean(markdown?.trim());
 
   const bubbleClasses = [
     "chat-bubble",
     canCopyMarkdown ? "has-copy" : "",
     opts.isStreaming ? "streaming" : "",
-    "fade-in",
+    opts.isStreaming ? "" : "fade-in",
   ]
     .filter(Boolean)
     .join(" ");
@@ -261,7 +268,7 @@ function renderGroupedMessage(
     return html`${toolCards.map((card) => renderToolCardSidebar(card, onOpenSidebar))}`;
   }
 
-  if (!markdown && !hasToolCards && !hasImages) {
+  if (!markdown && !hasToolCards && !hasImages && !showEmptyAssistantPlaceholder) {
     return nothing;
   }
 
@@ -279,6 +286,13 @@ function renderGroupedMessage(
       ${
         markdown
           ? html`<div class="chat-text" dir="${detectTextDirection(markdown)}">${unsafeHTML(toSanitizedMarkdownHtml(markdown))}</div>`
+          : nothing
+      }
+      ${
+        showEmptyAssistantPlaceholder
+          ? html`
+              <div class="chat-empty-assistant" role="note">No visible text response.</div>
+            `
           : nothing
       }
       ${toolCards.map((card) => renderToolCardSidebar(card, onOpenSidebar))}

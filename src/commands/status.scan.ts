@@ -28,6 +28,20 @@ type MemoryPluginStatus = {
   reason?: string;
 };
 
+type ChannelRestartTelemetry = Record<
+  string,
+  Record<
+    string,
+    {
+      accountId: string;
+      attempts: number;
+      maxAttempts: number;
+      exhausted: boolean;
+      manuallyStopped: boolean;
+    }
+  >
+>;
+
 type DeferredResult<T> = { ok: true; value: T } | { ok: false; error: unknown };
 
 type GatewayProbeSnapshot = {
@@ -100,6 +114,17 @@ async function resolveChannelsStatus(params: {
   }).catch(() => null);
 }
 
+function extractChannelRestartTelemetry(value: unknown): ChannelRestartTelemetry {
+  if (!value || typeof value !== "object") {
+    return {};
+  }
+  const raw = (value as { channelRestartTelemetry?: unknown }).channelRestartTelemetry;
+  if (!raw || typeof raw !== "object") {
+    return {};
+  }
+  return raw as ChannelRestartTelemetry;
+}
+
 export type StatusScanResult = {
   cfg: ReturnType<typeof loadConfig>;
   osSummary: ReturnType<typeof resolveOsSummary>;
@@ -116,6 +141,7 @@ export type StatusScanResult = {
   channelIssues: ReturnType<typeof collectChannelStatusIssues>;
   agentStatus: Awaited<ReturnType<typeof getAgentLocalStatuses>>;
   channels: Awaited<ReturnType<typeof buildChannelsTable>>;
+  channelRestartTelemetry: ChannelRestartTelemetry;
   summary: Awaited<ReturnType<typeof getStatusSummary>>;
   memory: MemoryStatusSnapshot | null;
   memoryPlugin: MemoryPluginStatus;
@@ -197,6 +223,7 @@ async function scanStatusJsonFast(opts: {
   const memoryPlugin = resolveMemoryPluginStatus(cfg);
   const memoryPromise = resolveMemoryStatusSnapshot({ cfg, agentStatus, memoryPlugin });
   const [channelsStatus, memory] = await Promise.all([channelsStatusPromise, memoryPromise]);
+  const channelRestartTelemetry = extractChannelRestartTelemetry(channelsStatus);
   const channelIssues = channelsStatus ? collectChannelStatusIssues(channelsStatus) : [];
 
   return {
@@ -215,6 +242,7 @@ async function scanStatusJsonFast(opts: {
     channelIssues,
     agentStatus,
     channels: { rows: [], details: [] },
+    channelRestartTelemetry,
     summary,
     memory,
     memoryPlugin,
@@ -293,6 +321,7 @@ export async function scanStatus(
 
       progress.setLabel("Querying channel status…");
       const channelsStatus = await resolveChannelsStatus({ gatewayReachable, opts });
+      const channelRestartTelemetry = extractChannelRestartTelemetry(channelsStatus);
       const channelIssues = channelsStatus ? collectChannelStatusIssues(channelsStatus) : [];
       progress.tick();
 
@@ -332,6 +361,7 @@ export async function scanStatus(
         channelIssues,
         agentStatus,
         channels,
+        channelRestartTelemetry,
         summary,
         memory,
         memoryPlugin,

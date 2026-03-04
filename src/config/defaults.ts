@@ -410,25 +410,45 @@ export function applyContextPruningDefaults(cfg: OpenClawConfig): OpenClawConfig
   }
 
   const authMode = resolveAnthropicDefaultAuthMode(cfg);
-  if (!authMode) {
-    return cfg;
-  }
 
   let mutated = false;
   const nextDefaults = { ...defaults };
   const contextPruning = defaults.contextPruning ?? {};
   const heartbeat = defaults.heartbeat ?? {};
+  const contextPruningMode = defaults.contextPruning?.mode;
+  const pruningEnabledOrUnset =
+    contextPruningMode === undefined || contextPruningMode === "cache-ttl";
+  let nextContextPruning = contextPruning;
 
   if (defaults.contextPruning?.mode === undefined) {
-    nextDefaults.contextPruning = {
-      ...contextPruning,
+    nextContextPruning = {
+      ...nextContextPruning,
       mode: "cache-ttl",
-      ttl: defaults.contextPruning?.ttl ?? "1h",
     };
     mutated = true;
   }
 
-  if (defaults.heartbeat?.every === undefined) {
+  if (pruningEnabledOrUnset && defaults.contextPruning?.policy === undefined) {
+    nextContextPruning = {
+      ...nextContextPruning,
+      policy: "eligible",
+    };
+    mutated = true;
+  }
+
+  if (pruningEnabledOrUnset && authMode && defaults.contextPruning?.ttl === undefined) {
+    nextContextPruning = {
+      ...nextContextPruning,
+      ttl: "1h",
+    };
+    mutated = true;
+  }
+
+  if (nextContextPruning !== contextPruning) {
+    nextDefaults.contextPruning = nextContextPruning;
+  }
+
+  if (authMode && defaults.heartbeat?.every === undefined) {
     nextDefaults.heartbeat = {
       ...heartbeat,
       every: authMode === "oauth" ? "1h" : "30m",

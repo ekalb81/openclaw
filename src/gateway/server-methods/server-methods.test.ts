@@ -715,7 +715,13 @@ describe("gateway healthHandlers.status scope handling", () => {
       req: {} as never,
       params: {} as never,
       respond: respond as never,
-      context: {} as never,
+      context: {
+        getRuntimeSnapshot: () => ({
+          channels: {},
+          channelAccounts: {},
+          restartTelemetry: {},
+        }),
+      } as never,
       client: { connect: { role: "operator", scopes } } as never,
       isWebchatConnect: () => false,
     });
@@ -732,7 +738,11 @@ describe("gateway healthHandlers.status scope handling", () => {
       const respond = await runHealthStatus(scopes);
 
       expect(vi.mocked(statusModule.getStatusSummary)).toHaveBeenCalledWith({ includeSensitive });
-      expect(respond).toHaveBeenCalledWith(true, { ok: true }, undefined);
+      expect(respond).toHaveBeenCalledWith(
+        true,
+        expect.objectContaining({ ok: true, channelRestartTelemetry: {} }),
+        undefined,
+      );
     },
   );
 });

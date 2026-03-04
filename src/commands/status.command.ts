@@ -65,6 +65,48 @@ function resolvePairingRecoveryContext(params: {
   return { requestId: requestId || null };
 }
 
+function summarizeChannelRestartTelemetry(value: unknown): {
+  accounts: number;
+  retrying: number;
+  exhausted: number;
+  manuallyStopped: number;
+} {
+  if (!value || typeof value !== "object") {
+    return { accounts: 0, retrying: 0, exhausted: 0, manuallyStopped: 0 };
+  }
+  const channels = Object.values(value as Record<string, unknown>).filter(
+    (entry): entry is Record<string, unknown> => Boolean(entry && typeof entry === "object"),
+  );
+  const accounts = channels.flatMap((channel) => Object.values(channel));
+  let retrying = 0;
+  let exhausted = 0;
+  let manuallyStopped = 0;
+  for (const account of accounts) {
+    if (!account || typeof account !== "object") {
+      continue;
+    }
+    const attempts =
+      typeof (account as { attempts?: unknown }).attempts === "number"
+        ? ((account as { attempts: number }).attempts ?? 0)
+        : 0;
+    if (attempts > 0) {
+      retrying += 1;
+    }
+    if ((account as { exhausted?: unknown }).exhausted === true) {
+      exhausted += 1;
+    }
+    if ((account as { manuallyStopped?: unknown }).manuallyStopped === true) {
+      manuallyStopped += 1;
+    }
+  }
+  return {
+    accounts: accounts.length,
+    retrying,
+    exhausted,
+    manuallyStopped,
+  };
+}
+
 export async function statusCommand(
   opts: {
     json?: boolean;
@@ -124,6 +166,7 @@ export async function statusCommand(
     channelIssues,
     agentStatus,
     channels,
+    channelRestartTelemetry,
     summary,
     memory,
     memoryPlugin,
@@ -200,6 +243,7 @@ export async function statusCommand(
           nodeService: nodeDaemon,
           agents: agentStatus,
           securityAudit,
+          channelRestartTelemetry,
           ...(health || usage || lastHeartbeat ? { health, usage, lastHeartbeat } : {}),
         },
         null,
@@ -309,6 +353,11 @@ export async function statusCommand(
     summary.queuedSystemEvents.length > 0 ? `${summary.queuedSystemEvents.length} queued` : "none";
 
   const probesValue = health ? ok("enabled") : muted("skipped (use --deep)");
+  const restartTelemetrySummary = summarizeChannelRestartTelemetry(channelRestartTelemetry);
+  const restartTelemetryValue =
+    restartTelemetrySummary.accounts === 0
+      ? muted("none")
+      : `retrying ${restartTelemetrySummary.retrying} | exhausted ${restartTelemetrySummary.exhausted} | manual ${restartTelemetrySummary.manuallyStopped}`;
 
   const heartbeatValue = (() => {
     const parts = summary.heartbeat.agents
@@ -415,6 +464,7 @@ export async function statusCommand(
     { Item: "Node service", Value: nodeDaemonValue },
     { Item: "Agents", Value: agentsValue },
     { Item: "Memory", Value: memoryValue },
+    { Item: "Channel restarts", Value: restartTelemetryValue },
     { Item: "Probes", Value: probesValue },
     { Item: "Events", Value: eventsValue },
     { Item: "Heartbeat", Value: heartbeatValue },

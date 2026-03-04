@@ -41,6 +41,10 @@ import {
   listChannelSupportedActions,
   resolveChannelMessageToolHints,
 } from "../../channel-tools.js";
+import {
+  resolvePromptBudgetSettings,
+  runPromptBudgetPreflight,
+} from "../../context-window-guard.js";
 import { DEFAULT_CONTEXT_TOKENS } from "../../defaults.js";
 import { resolveOpenClawDocsPath } from "../../docs-path.js";
 import { isTimeoutError } from "../../failover-error.js";
@@ -548,6 +552,22 @@ function summarizeSessionContext(messages: AgentMessage[]): {
   };
 }
 
+function buildPromptBudgetBlockErrorMessage(params: {
+  provider: string;
+  modelId: string;
+  estimatedTokens: number;
+  hardLimitTokens: number;
+  contextWindowTokens: number;
+}): string {
+  return (
+    `Prompt preflight blocked for ${params.provider}/${params.modelId}: estimated input ` +
+    `${params.estimatedTokens} tokens exceeded hard budget ${params.hardLimitTokens} ` +
+    `(context window ${params.contextWindowTokens}). ` +
+    `Try /compact, reduce large tool context, or tune agents.defaults.promptBudget; ` +
+    `disable guard with agents.defaults.promptBudget.enabled=false.`
+  );
+}
+
 export async function runEmbeddedAttempt(
   params: EmbeddedRunAttemptParams,
 ): Promise<EmbeddedRunAttemptResult> {
@@ -978,14 +998,21 @@ export async function runEmbeddedAttempt(
         throw new Error("Embedded agent session missing");
       }
       const activeSession = session;
+      const resolvedContextWindowTokens = Math.max(
+        1,
+        Math.floor(params.model.contextWindow ?? params.model.maxTokens ?? DEFAULT_CONTEXT_TOKENS),
+      );
+      const promptBudgetSettings = resolvePromptBudgetSettings({
+        cfg: params.config,
+        provider: params.provider,
+        modelId: params.modelId,
+      });
+      const toolResultContextPolicy =
+        params.config?.agents?.defaults?.compaction?.toolResultContext;
       removeToolResultContextGuard = installToolResultContextGuard({
         agent: activeSession.agent,
-        contextWindowTokens: Math.max(
-          1,
-          Math.floor(
-            params.model.contextWindow ?? params.model.maxTokens ?? DEFAULT_CONTEXT_TOKENS,
-          ),
-        ),
+        contextWindowTokens: resolvedContextWindowTokens,
+        policy: toolResultContextPolicy,
       });
       const cacheTrace = createCacheTrace({
         cfg: params.config,
@@ -1050,12 +1077,7 @@ export async function runEmbeddedAttempt(
         providerId: providerIdForNumCtx,
       });
       if (shouldInjectNumCtx) {
-        const numCtx = Math.max(
-          1,
-          Math.floor(
-            params.model.contextWindow ?? params.model.maxTokens ?? DEFAULT_CONTEXT_TOKENS,
-          ),
-        );
+        const numCtx = resolvedContextWindowTokens;
         activeSession.agent.streamFn = wrapOllamaCompatNumCtx(activeSession.agent.streamFn, numCtx);
       }
 
@@ -1466,6 +1488,68 @@ export async function runEmbeddedAttempt(
             note: `images: prompt=${imageResult.images.length}`,
           });
 
+          const promptBudgetPreflight = runPromptBudgetPreflight({
+            messages: activeSession.messages,
+            prompt: effectivePrompt,
+            systemPrompt: systemPromptText,
+            imagesCount: imageResult.images.length,
+            contextWindowTokens: resolvedContextWindowTokens,
+            settings: promptBudgetSettings,
+          });
+          if (promptBudgetPreflight.changed) {
+            activeSession.agent.replaceMessages(promptBudgetPreflight.messages);
+          }
+          for (const event of promptBudgetPreflight.events) {
+            const droppedSuffix =
+              typeof event.droppedMessages === "number"
+                ? ` droppedMessages=${event.droppedMessages}`
+                : "";
+            const noteSuffix = event.note ? ` note=${event.note}` : "";
+            log.warn(
+              `[prompt-budget] ${event.phase}:${event.action} provider=${params.provider}/${params.modelId} ` +
+                `beforeTokens=${event.beforeTokens} afterTokens=${event.afterTokens} ` +
+                `softLimit=${promptBudgetPreflight.limits.softLimitTokens} ` +
+                `hardLimit=${promptBudgetPreflight.limits.hardLimitTokens}${droppedSuffix}${noteSuffix}`,
+            );
+          }
+          try {
+            const droppedMessages = promptBudgetPreflight.events.reduce(
+              (sum, event) => sum + (event.droppedMessages ?? 0),
+              0,
+            );
+            sessionManager.appendCustomEntry("openclaw:prompt-footprint", {
+              timestamp: Date.now(),
+              runId: params.runId,
+              sessionId: params.sessionId,
+              provider: params.provider,
+              model: params.modelId,
+              profile: promptBudgetPreflight.settings.profile ?? "balanced",
+              enabled: promptBudgetPreflight.settings.enabled,
+              changed: promptBudgetPreflight.changed,
+              blocked: promptBudgetPreflight.blocked,
+              droppedMessages,
+              actions: promptBudgetPreflight.events.map(
+                (event) => `${event.phase}:${event.action}`,
+              ),
+              limits: promptBudgetPreflight.limits,
+              initial: promptBudgetPreflight.initial,
+              final: promptBudgetPreflight.final,
+            });
+          } catch (footprintErr) {
+            log.warn(`failed to persist prompt footprint entry: ${String(footprintErr)}`);
+          }
+          if (promptBudgetPreflight.blocked) {
+            throw new Error(
+              buildPromptBudgetBlockErrorMessage({
+                provider: params.provider,
+                modelId: params.modelId,
+                estimatedTokens: promptBudgetPreflight.final.estimatedTokens,
+                hardLimitTokens: promptBudgetPreflight.limits.hardLimitTokens,
+                contextWindowTokens: promptBudgetPreflight.limits.contextWindowTokens,
+              }),
+            );
+          }
+
           // Diagnostic: log context sizes before prompt to help debug early overflow errors.
           if (log.isEnabled("debug")) {
             const msgCount = activeSession.messages.length;
@@ -1563,9 +1647,13 @@ export async function runEmbeddedAttempt(
         // double-compaction. See: https://github.com/openclaw/openclaw/issues/9282
         // Skip when timed out during compaction — session state may be inconsistent.
         if (!timedOutDuringCompaction && !compactionOccurredThisAttempt) {
+          const pruningCfg = params.config?.agents?.defaults?.contextPruning;
+          const pruningMode = pruningCfg?.mode;
+          const pruningPolicy = pruningCfg?.policy ?? "eligible";
           const shouldTrackCacheTtl =
-            params.config?.agents?.defaults?.contextPruning?.mode === "cache-ttl" &&
-            isCacheTtlEligibleProvider(params.provider, params.modelId);
+            pruningMode !== "off" &&
+            (pruningPolicy === "all" ||
+              isCacheTtlEligibleProvider(params.provider, params.modelId));
           if (shouldTrackCacheTtl) {
             appendCacheTtlTimestamp(sessionManager, {
               timestamp: Date.now(),

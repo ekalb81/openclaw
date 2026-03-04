@@ -267,6 +267,7 @@ describe("canvas host", () => {
     const linkPath = path.join(a2uiRoot, linkName);
     let createdBundle = false;
     let createdLink = false;
+    let symlinkSupported = true;
 
     try {
       await fs.stat(bundlePath);
@@ -275,8 +276,18 @@ describe("canvas host", () => {
       createdBundle = true;
     }
 
-    await fs.symlink(path.join(process.cwd(), "package.json"), linkPath);
-    createdLink = true;
+    try {
+      await fs.symlink(path.join(process.cwd(), "package.json"), linkPath);
+      createdLink = true;
+    } catch (error) {
+      const err = error as NodeJS.ErrnoException;
+      if (process.platform === "win32" && err.code === "EPERM") {
+        // File symlinks require SeCreateSymbolicLinkPrivilege on Windows hosts.
+        symlinkSupported = false;
+      } else {
+        throw error;
+      }
+    }
 
     const server = await startFixtureCanvasHost(dir);
 
@@ -298,9 +309,11 @@ describe("canvas host", () => {
       );
       expect(traversalRes.status).toBe(404);
       expect(await traversalRes.text()).toBe("not found");
-      const symlinkRes = await fetch(`http://127.0.0.1:${server.port}${A2UI_PATH}/${linkName}`);
-      expect(symlinkRes.status).toBe(404);
-      expect(await symlinkRes.text()).toBe("not found");
+      if (symlinkSupported) {
+        const symlinkRes = await fetch(`http://127.0.0.1:${server.port}${A2UI_PATH}/${linkName}`);
+        expect(symlinkRes.status).toBe(404);
+        expect(await symlinkRes.text()).toBe("not found");
+      }
     } finally {
       await server.close();
       if (createdLink) {

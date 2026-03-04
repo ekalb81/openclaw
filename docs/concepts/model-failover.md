@@ -139,6 +139,24 @@ timeouts that exhausted profile rotation (other errors do not advance fallback).
 When a run starts with a model override (hooks or CLI), fallbacks still end at
 `agents.defaults.model.primary` after trying any configured fallbacks.
 
+## Cost-aware routing tiers
+
+Optional cost-aware routing tiers can be enabled with `agents.defaults.modelRouting`.
+When enabled, OpenClaw builds fallback candidates from tier chains and can escalate
+from the selected tier toward higher tiers.
+
+Defaults and behavior:
+
+- `enabled: false` (legacy fallback order remains default)
+- `tier: "balanced"`
+- `tierOrder: ["economy", "balanced", "premium"]`
+- `tiers.<tier>` uses the same `{ primary, fallbacks }` model config shape
+
+OpenRouter passthrough can also be tiered:
+
+- `modelRouting.openRouter.providerByTier.<tier>` is forwarded to OpenRouter provider routing
+  when provider is `openrouter` and no per-model provider routing override is set.
+
 ## Related config
 
 See [Gateway configuration](/gateway/configuration) for:
@@ -147,6 +165,7 @@ See [Gateway configuration](/gateway/configuration) for:
 - `auth.cooldowns.billingBackoffHours` / `auth.cooldowns.billingBackoffHoursByProvider`
 - `auth.cooldowns.billingMaxHours` / `auth.cooldowns.failureWindowHours`
 - `agents.defaults.model.primary` / `agents.defaults.model.fallbacks`
+- `agents.defaults.modelRouting`
 - `agents.defaults.imageModel` routing
 
 See [Models](/concepts/models) for the broader model selection and fallback overview.

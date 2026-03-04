@@ -87,18 +87,28 @@ describe("media server", () => {
         await writeMediaFile("file2", "hello");
       },
     },
-    {
-      testName: "blocks symlink escaping outside media dir",
-      mediaPath: "link-out",
-      setup: async () => {
-        const target = path.join(process.cwd(), "package.json"); // outside MEDIA_DIR
-        const link = path.join(MEDIA_DIR, "link-out");
-        await fs.symlink(target, link);
-      },
-    },
   ] as const)("$testName", async (testCase) => {
     await testCase.setup?.();
     const res = await fetch(mediaUrl(testCase.mediaPath));
+    expect(res.status).toBe(400);
+    expect(await res.text()).toBe("invalid path");
+  });
+
+  it("blocks symlink escaping outside media dir", async () => {
+    const target = path.join(process.cwd(), "package.json"); // outside MEDIA_DIR
+    const link = path.join(MEDIA_DIR, "link-out");
+    try {
+      await fs.symlink(target, link);
+    } catch (error) {
+      const err = error as NodeJS.ErrnoException;
+      // File symlinks require SeCreateSymbolicLinkPrivilege on Windows hosts.
+      if (process.platform === "win32" && err.code === "EPERM") {
+        return;
+      }
+      throw error;
+    }
+
+    const res = await fetch(mediaUrl("link-out"));
     expect(res.status).toBe(400);
     expect(await res.text()).toBe("invalid path");
   });

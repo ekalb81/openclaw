@@ -173,7 +173,20 @@ function runContextHandler(
 describe("context-pruning", () => {
   it("mode off disables pruning", () => {
     expect(computeEffectiveSettings({ mode: "off" })).toBeNull();
-    expect(computeEffectiveSettings({})).toBeNull();
+  });
+
+  it("uses default cache-ttl settings when mode is omitted", () => {
+    const settings = computeEffectiveSettings({});
+    expect(settings).toMatchObject({
+      mode: "cache-ttl",
+      policy: "eligible",
+      ttlMs: DEFAULT_CONTEXT_PRUNING_SETTINGS.ttlMs,
+    });
+  });
+
+  it("accepts policy overrides", () => {
+    const settings = computeEffectiveSettings({ policy: "all" });
+    expect(settings?.policy).toBe("all");
   });
 
   it("does not touch tool results after the last N assistants", () => {

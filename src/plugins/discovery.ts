@@ -33,6 +33,34 @@ export type PluginDiscoveryResult = {
   diagnostics: PluginDiagnostic[];
 };
 
+function discoverPluginsFromPaths(params: {
+  paths: string[];
+  workspaceDir?: string;
+  ownershipUid?: number | null;
+  candidates: PluginCandidate[];
+  diagnostics: PluginDiagnostic[];
+  seen: Set<string>;
+}) {
+  for (const rawPath of params.paths) {
+    if (typeof rawPath !== "string") {
+      continue;
+    }
+    const trimmed = rawPath.trim();
+    if (!trimmed) {
+      continue;
+    }
+    discoverFromPath({
+      rawPath: trimmed,
+      origin: "config",
+      ownershipUid: params.ownershipUid,
+      workspaceDir: params.workspaceDir?.trim() || undefined,
+      candidates: params.candidates,
+      diagnostics: params.diagnostics,
+      seen: params.seen,
+    });
+  }
+}
+
 function currentUid(overrideUid?: number | null): number | null {
   if (overrideUid !== undefined) {
     return overrideUid;
@@ -575,25 +603,14 @@ export function discoverOpenClawPlugins(params: {
   const seen = new Set<string>();
   const workspaceDir = params.workspaceDir?.trim();
 
-  const extra = params.extraPaths ?? [];
-  for (const extraPath of extra) {
-    if (typeof extraPath !== "string") {
-      continue;
-    }
-    const trimmed = extraPath.trim();
-    if (!trimmed) {
-      continue;
-    }
-    discoverFromPath({
-      rawPath: trimmed,
-      origin: "config",
-      ownershipUid: params.ownershipUid,
-      workspaceDir: workspaceDir?.trim() || undefined,
-      candidates,
-      diagnostics,
-      seen,
-    });
-  }
+  discoverPluginsFromPaths({
+    paths: params.extraPaths ?? [],
+    workspaceDir,
+    ownershipUid: params.ownershipUid,
+    candidates,
+    diagnostics,
+    seen,
+  });
   if (workspaceDir) {
     const workspaceRoot = resolveUserPath(workspaceDir);
     const workspaceExtDirs = [path.join(workspaceRoot, ".openclaw", "extensions")];
@@ -634,5 +651,24 @@ export function discoverOpenClawPlugins(params: {
     seen,
   });
 
+  return { candidates, diagnostics };
+}
+
+export function discoverOpenClawPluginsFromPaths(params: {
+  paths: string[];
+  workspaceDir?: string;
+  ownershipUid?: number | null;
+}): PluginDiscoveryResult {
+  const candidates: PluginCandidate[] = [];
+  const diagnostics: PluginDiagnostic[] = [];
+  const seen = new Set<string>();
+  discoverPluginsFromPaths({
+    paths: params.paths,
+    workspaceDir: params.workspaceDir,
+    ownershipUid: params.ownershipUid,
+    candidates,
+    diagnostics,
+    seen,
+  });
   return { candidates, diagnostics };
 }

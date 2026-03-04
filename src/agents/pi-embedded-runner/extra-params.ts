@@ -49,6 +49,55 @@ type CacheRetentionStreamOptions = Partial<SimpleStreamOptions> & {
   openaiWsWarmup?: boolean;
 };
 
+type ModelRoutingTier = "economy" | "balanced" | "premium";
+
+function normalizeModelRoutingTier(value: unknown): ModelRoutingTier | undefined {
+  if (value === "economy" || value === "balanced" || value === "premium") {
+    return value;
+  }
+  return undefined;
+}
+
+function resolveConfiguredModelRoutingTier(
+  cfg: OpenClawConfig | undefined,
+): ModelRoutingTier | undefined {
+  const rawTier = (cfg?.agents?.defaults as { modelRouting?: { tier?: unknown } } | undefined)
+    ?.modelRouting?.tier;
+  return normalizeModelRoutingTier(rawTier) ?? "balanced";
+}
+
+function resolveTieredOpenRouterProviderRouting(params: {
+  cfg: OpenClawConfig | undefined;
+  provider: string;
+}): Record<string, unknown> | undefined {
+  if (params.provider !== "openrouter") {
+    return undefined;
+  }
+  const defaults = params.cfg?.agents?.defaults as
+    | {
+        modelRouting?: {
+          enabled?: unknown;
+          openRouter?: {
+            providerByTier?: Record<string, Record<string, unknown>>;
+          };
+        };
+      }
+    | undefined;
+  if (defaults?.modelRouting?.enabled !== true) {
+    return undefined;
+  }
+  const tier = resolveConfiguredModelRoutingTier(params.cfg);
+  if (!tier) {
+    return undefined;
+  }
+  const providerByTier = defaults.modelRouting?.openRouter?.providerByTier;
+  const routing = providerByTier?.[tier];
+  if (!routing || typeof routing !== "object" || Array.isArray(routing)) {
+    return undefined;
+  }
+  return { ...routing };
+}
+
 /**
  * Resolve cacheRetention from extraParams, supporting both new `cacheRetention`
  * and legacy `cacheControlTtl` values for backwards compatibility.
@@ -886,15 +935,32 @@ export function applyExtraParamsToAgent(
           Object.entries(extraParamsOverride).filter(([, value]) => value !== undefined),
         )
       : undefined;
-  const merged = Object.assign({}, extraParams, override);
-  const wrappedStreamFn = createStreamFnWithExtraParams(agent.streamFn, merged, provider);
+  const merged = Object.assign({}, extraParams, override) as Record<string, unknown>;
+  const tieredOpenRouterRouting =
+    merged.provider === undefined
+      ? resolveTieredOpenRouterProviderRouting({
+          cfg,
+          provider,
+        })
+      : undefined;
+  const effectiveParams = tieredOpenRouterRouting
+    ? { ...merged, provider: tieredOpenRouterRouting }
+    : merged;
+  const wrappedStreamFn = createStreamFnWithExtraParams(agent.streamFn, effectiveParams, provider);
 
   if (wrappedStreamFn) {
+    if (tieredOpenRouterRouting) {
+      log.debug(
+        `applying tiered OpenRouter routing for ${provider}/${modelId}: ${JSON.stringify(
+          tieredOpenRouterRouting,
+        )}`,
+      );
+    }
     log.debug(`applying extraParams to agent streamFn for ${provider}/${modelId}`);
     agent.streamFn = wrappedStreamFn;
   }
 
-  const anthropicBetas = resolveAnthropicBetas(merged, provider, modelId);
+  const anthropicBetas = resolveAnthropicBetas(effectiveParams, provider, modelId);
   if (anthropicBetas?.length) {
     log.debug(
       `applying Anthropic beta header for ${provider}/${modelId}: ${anthropicBetas.join(",")}`,
@@ -911,7 +977,7 @@ export function applyExtraParamsToAgent(
 
   if (provider === "moonshot") {
     const moonshotThinkingType = resolveMoonshotThinkingType({
-      configuredThinking: merged?.thinking,
+      configuredThinking: effectiveParams?.thinking,
       thinkingLevel,
     });
     if (moonshotThinkingType) {
@@ -949,7 +1015,7 @@ export function applyExtraParamsToAgent(
   // Enable Z.AI tool_stream for real-time tool call streaming.
   // Enabled by default for Z.AI provider, can be disabled via params.tool_stream: false
   if (provider === "zai" || provider === "z-ai") {
-    const toolStreamEnabled = merged?.tool_stream !== false;
+    const toolStreamEnabled = effectiveParams?.tool_stream !== false;
     if (toolStreamEnabled) {
       log.debug(`enabling Z.AI tool_stream for ${provider}/${modelId}`);
       agent.streamFn = createZaiToolStreamWrapper(agent.streamFn, true);
@@ -963,5 +1029,5 @@ export function applyExtraParamsToAgent(
   // Work around upstream pi-ai hardcoding `store: false` for Responses API.
   // Force `store=true` for direct OpenAI Responses models and auto-enable
   // server-side compaction for compatible OpenAI Responses payloads.
-  agent.streamFn = createOpenAIResponsesContextManagementWrapper(agent.streamFn, merged);
+  agent.streamFn = createOpenAIResponsesContextManagementWrapper(agent.streamFn, effectiveParams);
 }

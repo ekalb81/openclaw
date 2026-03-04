@@ -49,6 +49,13 @@ export type AssistantUsageSnapshot = {
   };
 };
 
+export type PromptFootprintTelemetry = {
+  profile: string;
+  blocked: boolean;
+  changed: boolean;
+  estimatedTokens: number;
+};
+
 export function makeZeroUsageSnapshot(): AssistantUsageSnapshot {
   return {
     input: 0,
@@ -187,4 +194,32 @@ export function deriveSessionTotalTokens(params: {
   // Keep this value unclamped; display layers are responsible for capping
   // percentages for terminal output.
   return promptTokens;
+}
+
+export function normalizePromptFootprintTelemetry(
+  raw: unknown,
+): PromptFootprintTelemetry | undefined {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
+    return undefined;
+  }
+  const data = raw as Record<string, unknown>;
+  const profile =
+    typeof data.profile === "string" && data.profile.trim().length > 0
+      ? data.profile.trim()
+      : "balanced";
+  const blocked = data.blocked === true;
+  const changed = data.changed === true;
+  const final = data.final as Record<string, unknown> | undefined;
+  const initial = data.initial as Record<string, unknown> | undefined;
+  const estimatedTokens =
+    asFiniteNumber(final?.estimatedTokens) ??
+    asFiniteNumber(initial?.estimatedTokens) ??
+    asFiniteNumber(data.estimatedTokens) ??
+    0;
+  return {
+    profile,
+    blocked,
+    changed,
+    estimatedTokens,
+  };
 }

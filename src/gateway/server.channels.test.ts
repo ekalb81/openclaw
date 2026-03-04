@@ -117,6 +117,19 @@ describe("gateway server channels", () => {
           linked?: boolean;
         }
       >;
+      channelRestartTelemetry?: Record<
+        string,
+        Record<
+          string,
+          {
+            accountId?: string;
+            attempts?: number;
+            maxAttempts?: number;
+            exhausted?: boolean;
+            manuallyStopped?: boolean;
+          }
+        >
+      >;
     }>(ws, "channels.status", { probe: false, timeoutMs: 2000 });
     expect(res.ok).toBe(true);
     const telegram = res.payload?.channels?.telegram;
@@ -129,6 +142,13 @@ describe("gateway server channels", () => {
     expect(signal?.configured).toBe(false);
     expect(signal?.probe).toBeUndefined();
     expect(signal?.lastProbeAt).toBeNull();
+    expect(res.payload?.channelRestartTelemetry?.whatsapp?.default).toEqual({
+      accountId: "default",
+      attempts: 0,
+      maxAttempts: 10,
+      exhausted: false,
+      manuallyStopped: false,
+    });
   });
 
   test("channels.logout reports no session when missing", async () => {

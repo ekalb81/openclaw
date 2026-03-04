@@ -1,6 +1,7 @@
 import type { OpenClawConfig } from "../config/config.js";
 import type { DispatchFromConfigResult } from "./reply/dispatch-from-config.js";
 import { dispatchReplyFromConfig } from "./reply/dispatch-from-config.js";
+import { clearHistoryEntriesIfEnabled, type HistoryEntry } from "./reply/history.js";
 import { finalizeInboundContext } from "./reply/inbound-context.js";
 import {
   createReplyDispatcher,
@@ -13,6 +14,22 @@ import type { FinalizedMsgContext, MsgContext } from "./templating.js";
 import type { GetReplyOptions } from "./types.js";
 
 export type DispatchInboundResult = DispatchFromConfigResult;
+
+export function clearPendingGroupHistoryAfterDispatch(params: {
+  isGroup: boolean;
+  historyKey?: string;
+  historyLimit: number;
+  historyMap: Map<string, HistoryEntry[]>;
+}) {
+  if (!params.isGroup || !params.historyKey) {
+    return;
+  }
+  clearHistoryEntriesIfEnabled({
+    historyMap: params.historyMap,
+    historyKey: params.historyKey,
+    limit: params.historyLimit,
+  });
+}
 
 export async function withReplyDispatcher<T>(params: {
   dispatcher: ReplyDispatcher;

@@ -16,14 +16,16 @@ async function writeConfigForTest(home: string, config: unknown): Promise<void> 
 }
 
 describe("config pruning defaults", () => {
-  it("does not enable contextPruning by default", async () => {
+  it("default-enables contextPruning with eligible policy", async () => {
     await withEnvAsync({ ANTHROPIC_API_KEY: "", ANTHROPIC_OAUTH_TOKEN: "" }, async () => {
       await withTempHome(async (home) => {
         await writeConfigForTest(home, { agents: { defaults: {} } });
 
         const cfg = loadConfig();
 
-        expect(cfg.agents?.defaults?.contextPruning?.mode).toBeUndefined();
+        expect(cfg.agents?.defaults?.contextPruning?.mode).toBe("cache-ttl");
+        expect(cfg.agents?.defaults?.contextPruning?.policy).toBe("eligible");
+        expect(cfg.agents?.defaults?.contextPruning?.ttl).toBeUndefined();
       });
     });
   });
@@ -42,6 +44,7 @@ describe("config pruning defaults", () => {
       const cfg = loadConfig();
 
       expect(cfg.agents?.defaults?.contextPruning?.mode).toBe("cache-ttl");
+      expect(cfg.agents?.defaults?.contextPruning?.policy).toBe("eligible");
       expect(cfg.agents?.defaults?.contextPruning?.ttl).toBe("1h");
       expect(cfg.agents?.defaults?.heartbeat?.every).toBe("1h");
     });
@@ -65,6 +68,7 @@ describe("config pruning defaults", () => {
       const cfg = loadConfig();
 
       expect(cfg.agents?.defaults?.contextPruning?.mode).toBe("cache-ttl");
+      expect(cfg.agents?.defaults?.contextPruning?.policy).toBe("eligible");
       expect(cfg.agents?.defaults?.contextPruning?.ttl).toBe("1h");
       expect(cfg.agents?.defaults?.heartbeat?.every).toBe("30m");
       expect(
@@ -128,6 +132,7 @@ describe("config pruning defaults", () => {
       const cfg = loadConfig();
 
       expect(cfg.agents?.defaults?.contextPruning?.mode).toBe("off");
+      expect(cfg.agents?.defaults?.contextPruning?.policy).toBeUndefined();
     });
   });
 });
