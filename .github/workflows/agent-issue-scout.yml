@@ -15,7 +15,7 @@ concurrency:
 
 jobs:
   scout:
-    runs-on: blacksmith-16vcpu-ubuntu-2404
+    runs-on: ubuntu-latest
     timeout-minutes: 90
     steps:
       - name: Checkout
