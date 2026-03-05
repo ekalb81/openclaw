@@ -10,6 +10,7 @@ const OUTPUT_PATH = path.join(OUT_DIR, "issues.json");
 const DEFAULT_MODEL = "gpt-5-mini";
 const DEFAULT_BASE_URL = "https://api.openai.com/v1";
 const DEFAULT_MAX_PROPOSALS = 8;
+const DEFAULT_ENDPOINT_MODE = "auto";
 
 const ALLOWED_LABELS = new Set([
   "bug",
@@ -31,7 +32,12 @@ function resolveEnv() {
   const model = process.env.ISSUE_SCOUT_LLM_MODEL?.trim() || process.env.LLM_MODEL?.trim() || DEFAULT_MODEL;
   const rawMax = process.env.ISSUE_SCOUT_MAX_PROPOSALS?.trim();
   const maxProposals = rawMax ? Math.max(1, Number.parseInt(rawMax, 10) || DEFAULT_MAX_PROPOSALS) : DEFAULT_MAX_PROPOSALS;
-  return { apiKey, baseUrl, model, maxProposals };
+  const endpointModeRaw =
+    process.env.ISSUE_SCOUT_LLM_ENDPOINT?.trim().toLowerCase() || DEFAULT_ENDPOINT_MODE;
+  const endpointMode = ["auto", "chat", "completions"].includes(endpointModeRaw)
+    ? endpointModeRaw
+    : DEFAULT_ENDPOINT_MODE;
+  return { apiKey, baseUrl, model, maxProposals, endpointMode };
 }
 
 function writeEmpty(reason) {
@@ -60,7 +66,74 @@ function extractTextFromOpenAI(payload) {
   if (typeof outputText === "string" && outputText.trim()) {
     return outputText;
   }
+  const completionText = payload?.choices?.[0]?.text;
+  if (typeof completionText === "string" && completionText.trim()) {
+    return completionText;
+  }
   return "";
+}
+
+function shouldFallbackToCompletions(errorText) {
+  const normalized = errorText.toLowerCase();
+  return (
+    normalized.includes("not a chat model") ||
+    (normalized.includes("chat/completions") && normalized.includes("completions"))
+  );
+}
+
+async function callChatCompletions(params) {
+  const endpoint = `${params.baseUrl.replace(/\/$/, "")}/chat/completions`;
+  const response = await fetch(endpoint, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${params.apiKey}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      model: params.model,
+      temperature: 0.2,
+      messages: [
+        { role: "system", content: params.prompt },
+        { role: "user", content: JSON.stringify(params.snapshot) },
+      ],
+    }),
+  });
+  if (!response.ok) {
+    const body = await response.text();
+    throw new Error(`LLM chat request failed (${response.status}): ${body}`);
+  }
+  const payload = await response.json();
+  const text = extractTextFromOpenAI(payload);
+  if (!text) {
+    throw new Error("LLM chat response did not contain any text content.");
+  }
+  return text;
+}
+
+async function callLegacyCompletions(params) {
+  const endpoint = `${params.baseUrl.replace(/\/$/, "")}/completions`;
+  const response = await fetch(endpoint, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${params.apiKey}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      model: params.model,
+      temperature: 0.2,
+      prompt: `${params.prompt}\n\nRepository snapshot JSON:\n${JSON.stringify(params.snapshot)}`,
+    }),
+  });
+  if (!response.ok) {
+    const body = await response.text();
+    throw new Error(`LLM completions request failed (${response.status}): ${body}`);
+  }
+  const payload = await response.json();
+  const text = extractTextFromOpenAI(payload);
+  if (!text) {
+    throw new Error("LLM completions response did not contain any text content.");
+  }
+  return text;
 }
 
 function extractJsonBlock(text) {
@@ -104,7 +177,7 @@ function sanitizeIssue(entry, index) {
 }
 
 async function main() {
-  const { apiKey, baseUrl, model, maxProposals } = resolveEnv();
+  const { apiKey, baseUrl, model, maxProposals, endpointMode } = resolveEnv();
   if (!apiKey) {
     writeEmpty("missing ISSUE_SCOUT_LLM_API_KEY");
     return;
@@ -114,32 +187,23 @@ async function main() {
   const snapshot = JSON.parse(snapshotRaw);
   const prompt = fs.readFileSync(PROMPT_PATH, "utf8");
 
-  const endpoint = `${baseUrl.replace(/\/$/, "")}/chat/completions`;
-  const response = await fetch(endpoint, {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${apiKey}`,
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({
-      model,
-      temperature: 0.2,
-      messages: [
-        { role: "system", content: prompt },
-        { role: "user", content: JSON.stringify(snapshot) },
-      ],
-    }),
-  });
-
-  if (!response.ok) {
-    const body = await response.text();
-    throw new Error(`LLM request failed (${response.status}): ${body}`);
-  }
-
-  const payload = await response.json();
-  const text = extractTextFromOpenAI(payload);
-  if (!text) {
-    throw new Error("LLM response did not contain any text content.");
+  let text = "";
+  if (endpointMode === "chat") {
+    text = await callChatCompletions({ apiKey, baseUrl, model, prompt, snapshot });
+  } else if (endpointMode === "completions") {
+    text = await callLegacyCompletions({ apiKey, baseUrl, model, prompt, snapshot });
+  } else {
+    try {
+      text = await callChatCompletions({ apiKey, baseUrl, model, prompt, snapshot });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      if (!shouldFallbackToCompletions(message)) {
+        throw error;
+      }
+      // eslint-disable-next-line no-console
+      console.warn("chat endpoint rejected model; retrying with legacy completions endpoint");
+      text = await callLegacyCompletions({ apiKey, baseUrl, model, prompt, snapshot });
+    }
   }
 
   const jsonText = extractJsonBlock(text);
