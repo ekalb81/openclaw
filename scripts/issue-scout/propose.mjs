@@ -269,6 +269,10 @@ async function main() {
   }
 
   const transportOrder = resolveTransportOrder(endpointMode, model);
+  // eslint-disable-next-line no-console
+  console.log(
+    `issue-scout: model=${model} endpoint_mode=${endpointMode} transport_order=${transportOrder.join("->")}`,
+  );
   const failures = [];
   let text = "";
 
