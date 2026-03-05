@@ -193,6 +193,9 @@ function resolveTransportOrder(endpointMode, model) {
     return ["chat", "responses", "completions"];
   }
   if (endpointMode === "completions") {
+    if (!isLegacyCompletionsModel(model)) {
+      return ["responses", "chat", "completions"];
+    }
     return ["completions", "responses", "chat"];
   }
   if (endpointMode === "responses") {
@@ -261,7 +264,7 @@ async function main() {
   if (endpointMode === "completions" && !isLegacyCompletionsModel(model)) {
     // eslint-disable-next-line no-console
     console.warn(
-      `issue-scout: ISSUE_SCOUT_LLM_ENDPOINT=completions is legacy for model "${model}". Falling back to responses/chat on failure.`,
+      `issue-scout: ISSUE_SCOUT_LLM_ENDPOINT=completions is legacy for model "${model}". Prioritizing responses/chat first.`,
     );
   }
 
