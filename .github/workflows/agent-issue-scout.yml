@@ -52,7 +52,7 @@ jobs:
           ISSUE_SCOUT_LLM_API_KEY: ${{ secrets.ISSUE_SCOUT_LLM_API_KEY }}
           ISSUE_SCOUT_LLM_BASE_URL: ${{ vars.ISSUE_SCOUT_LLM_BASE_URL }}
           ISSUE_SCOUT_LLM_MODEL: ${{ vars.ISSUE_SCOUT_LLM_MODEL }}
-          ISSUE_SCOUT_LLM_ENDPOINT: ${{ vars.ISSUE_SCOUT_LLM_ENDPOINT }}
+          ISSUE_SCOUT_LLM_ENDPOINT: ${{ vars.ISSUE_SCOUT_LLM_ENDPOINT || 'responses' }}
           ISSUE_SCOUT_MAX_PROPOSALS: ${{ vars.ISSUE_SCOUT_MAX_PROPOSALS }}
 
       - name: Create GitHub issues
