@@ -34,7 +34,7 @@ function resolveEnv() {
   const maxProposals = rawMax ? Math.max(1, Number.parseInt(rawMax, 10) || DEFAULT_MAX_PROPOSALS) : DEFAULT_MAX_PROPOSALS;
   const endpointModeRaw =
     process.env.ISSUE_SCOUT_LLM_ENDPOINT?.trim().toLowerCase() || DEFAULT_ENDPOINT_MODE;
-  const endpointMode = ["auto", "chat", "completions"].includes(endpointModeRaw)
+  const endpointMode = ["auto", "chat", "completions", "responses"].includes(endpointModeRaw)
     ? endpointModeRaw
     : DEFAULT_ENDPOINT_MODE;
   return { apiKey, baseUrl, model, maxProposals, endpointMode };
@@ -66,19 +66,23 @@ function extractTextFromOpenAI(payload) {
   if (typeof outputText === "string" && outputText.trim()) {
     return outputText;
   }
+  const responseOutputText = Array.isArray(payload?.output)
+    ? payload.output
+        .flatMap((item) => (Array.isArray(item?.content) ? item.content : []))
+        .map((part) =>
+          part?.type === "output_text" && typeof part?.text === "string" ? part.text : "",
+        )
+        .join("\n")
+        .trim()
+    : "";
+  if (responseOutputText) {
+    return responseOutputText;
+  }
   const completionText = payload?.choices?.[0]?.text;
   if (typeof completionText === "string" && completionText.trim()) {
     return completionText;
   }
   return "";
-}
-
-function shouldFallbackToCompletions(errorText) {
-  const normalized = errorText.toLowerCase();
-  return (
-    normalized.includes("not a chat model") ||
-    (normalized.includes("chat/completions") && normalized.includes("completions"))
-  );
 }
 
 async function callChatCompletions(params) {
@@ -136,6 +140,76 @@ async function callLegacyCompletions(params) {
   return text;
 }
 
+async function callResponses(params) {
+  const endpoint = `${params.baseUrl.replace(/\/$/, "")}/responses`;
+  const response = await fetch(endpoint, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${params.apiKey}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      model: params.model,
+      temperature: 0.2,
+      input: [
+        {
+          role: "system",
+          content: [{ type: "input_text", text: params.prompt }],
+        },
+        {
+          role: "user",
+          content: [{ type: "input_text", text: JSON.stringify(params.snapshot) }],
+        },
+      ],
+    }),
+  });
+  if (!response.ok) {
+    const body = await response.text();
+    throw new Error(`LLM responses request failed (${response.status}): ${body}`);
+  }
+  const payload = await response.json();
+  const text = extractTextFromOpenAI(payload);
+  if (!text) {
+    throw new Error("LLM responses output did not contain any text content.");
+  }
+  return text;
+}
+
+function isLegacyCompletionsModel(model) {
+  const normalized = model.toLowerCase();
+  return (
+    normalized.includes("gpt-3.5-turbo-instruct") ||
+    normalized.startsWith("text-") ||
+    normalized.includes("davinci")
+  );
+}
+
+function isCodexLikeModel(model) {
+  return model.toLowerCase().includes("codex");
+}
+
+function resolveTransportOrder(endpointMode, model) {
+  if (endpointMode === "chat") {
+    return ["chat", "responses", "completions"];
+  }
+  if (endpointMode === "completions") {
+    if (!isLegacyCompletionsModel(model)) {
+      return ["responses", "chat", "completions"];
+    }
+    return ["completions", "responses", "chat"];
+  }
+  if (endpointMode === "responses") {
+    return ["responses", "chat", "completions"];
+  }
+  if (isCodexLikeModel(model)) {
+    return ["responses", "chat", "completions"];
+  }
+  if (isLegacyCompletionsModel(model)) {
+    return ["completions", "chat", "responses"];
+  }
+  return ["chat", "responses", "completions"];
+}
+
 function extractJsonBlock(text) {
   const fencedMatch = text.match(/```(?:json)?\s*([\s\S]*?)\s*```/i);
   if (fencedMatch?.[1]) {
@@ -187,23 +261,45 @@ async function main() {
   const snapshot = JSON.parse(snapshotRaw);
   const prompt = fs.readFileSync(PROMPT_PATH, "utf8");
 
+  if (endpointMode === "completions" && !isLegacyCompletionsModel(model)) {
+    // eslint-disable-next-line no-console
+    console.warn(
+      `issue-scout: ISSUE_SCOUT_LLM_ENDPOINT=completions is legacy for model "${model}". Prioritizing responses/chat first.`,
+    );
+  }
+
+  const transportOrder = resolveTransportOrder(endpointMode, model);
+  // eslint-disable-next-line no-console
+  console.log(
+    `issue-scout: model=${model} endpoint_mode=${endpointMode} transport_order=${transportOrder.join("->")}`,
+  );
+  const failures = [];
   let text = "";
-  if (endpointMode === "chat") {
-    text = await callChatCompletions({ apiKey, baseUrl, model, prompt, snapshot });
-  } else if (endpointMode === "completions") {
-    text = await callLegacyCompletions({ apiKey, baseUrl, model, prompt, snapshot });
-  } else {
+
+  for (const transport of transportOrder) {
     try {
-      text = await callChatCompletions({ apiKey, baseUrl, model, prompt, snapshot });
+      if (transport === "chat") {
+        text = await callChatCompletions({ apiKey, baseUrl, model, prompt, snapshot });
+      } else if (transport === "responses") {
+        text = await callResponses({ apiKey, baseUrl, model, prompt, snapshot });
+      } else {
+        text = await callLegacyCompletions({ apiKey, baseUrl, model, prompt, snapshot });
+      }
+      if (text) {
+        if (failures.length > 0) {
+          // eslint-disable-next-line no-console
+          console.warn(`issue-scout: succeeded via ${transport} after fallback`);
+        }
+        break;
+      }
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      if (!shouldFallbackToCompletions(message)) {
-        throw error;
-      }
-      // eslint-disable-next-line no-console
-      console.warn("chat endpoint rejected model; retrying with legacy completions endpoint");
-      text = await callLegacyCompletions({ apiKey, baseUrl, model, prompt, snapshot });
+      failures.push(`${transport}: ${message}`);
     }
+  }
+
+  if (!text) {
+    throw new Error(`All LLM endpoint attempts failed:\n${failures.join("\n")}`);
   }
 
   const jsonText = extractJsonBlock(text);
