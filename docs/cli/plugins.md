@@ -1,5 +1,5 @@
 ---
-summary: "CLI reference for `openclaw plugins` (list, install, uninstall, enable/disable, doctor)"
+summary: "CLI reference for `openclaw plugins` (list, install, uninstall, enable/disable, doctor, lint-policy)"
 read_when:
   - You want to install or manage in-process Gateway plugins
   - You want to debug plugin load failures
@@ -25,12 +25,20 @@ openclaw plugins enable <id>
 openclaw plugins disable <id>
 openclaw plugins uninstall <id>
 openclaw plugins doctor
+openclaw plugins lint-policy
 openclaw plugins update <id>
 openclaw plugins update --all
 ```
 
 Bundled plugins ship with OpenClaw but start disabled. Use `plugins enable` to
 activate them.
+
+Auto-discovered plugins from `~/.openclaw/extensions` and
+`<workspace>/.openclaw/extensions` are blocked unless the plugin id appears in
+`plugins.allow`.
+
+If you need temporary warning-only behavior while migrating existing installs,
+set `OPENCLAW_PLUGIN_TRUST_ALLOWLIST_MODE=warn` before starting the gateway.
 
 All plugins must ship a `openclaw.plugin.json` file with an inline JSON Schema
 (`configSchema`, even if empty). Missing/invalid manifests or schemas prevent
@@ -94,3 +102,26 @@ Updates only apply to plugins installed from npm (tracked in `plugins.installs`)
 When a stored integrity hash exists and the fetched artifact hash changes,
 OpenClaw prints a warning and asks for confirmation before proceeding. Use
 global `--yes` to bypass prompts in CI/non-interactive runs.
+
+### Policy lint
+
+```bash
+openclaw plugins lint-policy
+openclaw plugins lint-policy --path ./extensions/my-plugin
+openclaw plugins lint-policy --trust-mode warn
+openclaw plugins lint-policy --json
+```
+
+`lint-policy` validates plugin policy guardrails before release/deploy:
+
+- plugin manifest/discovery diagnostics,
+- trust allowlist coverage for auto-discovered workspace/global plugins,
+- runtime dependency policy checks (`workspace:*` in `dependencies`, `openclaw` in runtime deps).
+
+Options:
+
+- `--path <path>` (repeatable): lint explicit plugin paths only (skips workspace/global scan).
+- `--workspace <path>`: override workspace root for discovery.
+- `--trust-mode <enforce|warn>`: enforce or warning-only trust check mode.
+- `--fail-on-warn`: exit non-zero when warnings are present.
+- `--json`: output machine-readable report.

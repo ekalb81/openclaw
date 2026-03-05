@@ -1,4 +1,6 @@
 import fs from "node:fs";
+import readline from "node:readline";
+import { normalizePromptFootprintTelemetry } from "../../agents/usage.js";
 import { loadConfig } from "../../config/config.js";
 import {
   resolveSessionFilePath,
@@ -26,6 +28,7 @@ import {
   mergeUsageLatency,
 } from "../../shared/usage-aggregates.js";
 import type {
+  SessionPromptFootprint,
   SessionUsageEntry,
   SessionsUsageAggregates,
   SessionsUsageResult,
@@ -45,6 +48,7 @@ import type { GatewayRequestHandlers, RespondFn } from "./types.js";
 
 const COST_USAGE_CACHE_TTL_MS = 30_000;
 const DAY_MS = 24 * 60 * 60 * 1000;
+const PROMPT_FOOTPRINT_CUSTOM_TYPE = "openclaw:prompt-footprint";
 
 type DateRange = { startMs: number; endMs: number };
 type DateInterpretation =
@@ -91,6 +95,191 @@ function resolveSessionUsageFileOrRespond(
   }
 
   return { config, entry, agentId, sessionId, sessionFile };
+}
+
+function toFiniteNumber(value: unknown): number | undefined {
+  if (typeof value !== "number" || !Number.isFinite(value)) {
+    return undefined;
+  }
+  return value;
+}
+
+type PromptFootprintAccumulator = {
+  turns: number;
+  blockedTurns: number;
+  changedTurns: number;
+  estimatedTokensSum: number;
+  maxEstimatedTokens: number;
+  profileMap: Map<
+    string,
+    {
+      turns: number;
+      blockedTurns: number;
+      changedTurns: number;
+      estimatedTokensSum: number;
+      maxEstimatedTokens: number;
+    }
+  >;
+};
+
+function createPromptFootprintAccumulator(): PromptFootprintAccumulator {
+  return {
+    turns: 0,
+    blockedTurns: 0,
+    changedTurns: 0,
+    estimatedTokensSum: 0,
+    maxEstimatedTokens: 0,
+    profileMap: new Map(),
+  };
+}
+
+function mergePromptFootprintSummary(
+  target: PromptFootprintAccumulator,
+  summary: SessionPromptFootprint,
+): void {
+  target.turns += summary.turns;
+  target.blockedTurns += summary.blockedTurns;
+  target.changedTurns += summary.changedTurns;
+  target.estimatedTokensSum += summary.avgEstimatedTokens * summary.turns;
+  target.maxEstimatedTokens = Math.max(target.maxEstimatedTokens, summary.maxEstimatedTokens);
+  for (const profile of summary.profiles) {
+    const existing = target.profileMap.get(profile.profile) ?? {
+      turns: 0,
+      blockedTurns: 0,
+      changedTurns: 0,
+      estimatedTokensSum: 0,
+      maxEstimatedTokens: 0,
+    };
+    existing.turns += profile.turns;
+    existing.blockedTurns += profile.blockedTurns;
+    existing.changedTurns += profile.changedTurns;
+    existing.estimatedTokensSum += profile.avgEstimatedTokens * profile.turns;
+    existing.maxEstimatedTokens = Math.max(existing.maxEstimatedTokens, profile.maxEstimatedTokens);
+    target.profileMap.set(profile.profile, existing);
+  }
+}
+
+function finalizePromptFootprintSummary(
+  accumulator: PromptFootprintAccumulator,
+): SessionPromptFootprint | null {
+  if (accumulator.turns <= 0) {
+    return null;
+  }
+  return {
+    turns: accumulator.turns,
+    blockedTurns: accumulator.blockedTurns,
+    changedTurns: accumulator.changedTurns,
+    avgEstimatedTokens: Math.round(accumulator.estimatedTokensSum / accumulator.turns),
+    maxEstimatedTokens: Math.round(accumulator.maxEstimatedTokens),
+    profiles: Array.from(accumulator.profileMap.entries())
+      .map(([profile, values]) => ({
+        profile,
+        turns: values.turns,
+        blockedTurns: values.blockedTurns,
+        changedTurns: values.changedTurns,
+        avgEstimatedTokens:
+          values.turns > 0 ? Math.round(values.estimatedTokensSum / values.turns) : 0,
+        maxEstimatedTokens: Math.round(values.maxEstimatedTokens),
+      }))
+      .toSorted((a, b) => b.turns - a.turns || b.maxEstimatedTokens - a.maxEstimatedTokens),
+  };
+}
+
+async function loadSessionPromptFootprintSummary(params: {
+  sessionFile: string;
+  startMs?: number;
+  endMs?: number;
+}): Promise<SessionPromptFootprint | null> {
+  if (!params.sessionFile || !fs.existsSync(params.sessionFile)) {
+    return null;
+  }
+
+  const accumulator = createPromptFootprintAccumulator();
+  const stream = fs.createReadStream(params.sessionFile, { encoding: "utf-8" });
+  const rl = readline.createInterface({ input: stream, crlfDelay: Infinity });
+
+  try {
+    for await (const line of rl) {
+      const trimmed = line.trim();
+      if (!trimmed) {
+        continue;
+      }
+
+      let parsed: Record<string, unknown> | null = null;
+      try {
+        const json = JSON.parse(trimmed) as unknown;
+        parsed = json && typeof json === "object" ? (json as Record<string, unknown>) : null;
+      } catch {
+        parsed = null;
+      }
+      if (
+        !parsed ||
+        parsed.type !== "custom" ||
+        parsed.customType !== PROMPT_FOOTPRINT_CUSTOM_TYPE
+      ) {
+        continue;
+      }
+
+      const data =
+        parsed.data && typeof parsed.data === "object"
+          ? (parsed.data as Record<string, unknown>)
+          : null;
+      if (!data) {
+        continue;
+      }
+      const telemetry = normalizePromptFootprintTelemetry(data);
+      if (!telemetry) {
+        continue;
+      }
+      const timestamp =
+        toFiniteNumber(data.timestamp) ??
+        (typeof parsed.timestamp === "string" ? new Date(parsed.timestamp).getTime() : undefined);
+      if (timestamp !== undefined && params.startMs !== undefined && timestamp < params.startMs) {
+        continue;
+      }
+      if (timestamp !== undefined && params.endMs !== undefined && timestamp > params.endMs) {
+        continue;
+      }
+
+      const estimatedTokens = telemetry.estimatedTokens;
+      const profile = telemetry.profile;
+      const blocked = telemetry.blocked;
+      const changed = telemetry.changed;
+
+      accumulator.turns += 1;
+      accumulator.estimatedTokensSum += estimatedTokens;
+      accumulator.maxEstimatedTokens = Math.max(accumulator.maxEstimatedTokens, estimatedTokens);
+      if (blocked) {
+        accumulator.blockedTurns += 1;
+      }
+      if (changed) {
+        accumulator.changedTurns += 1;
+      }
+
+      const profileEntry = accumulator.profileMap.get(profile) ?? {
+        turns: 0,
+        blockedTurns: 0,
+        changedTurns: 0,
+        estimatedTokensSum: 0,
+        maxEstimatedTokens: 0,
+      };
+      profileEntry.turns += 1;
+      profileEntry.estimatedTokensSum += estimatedTokens;
+      profileEntry.maxEstimatedTokens = Math.max(profileEntry.maxEstimatedTokens, estimatedTokens);
+      if (blocked) {
+        profileEntry.blockedTurns += 1;
+      }
+      if (changed) {
+        profileEntry.changedTurns += 1;
+      }
+      accumulator.profileMap.set(profile, profileEntry);
+    }
+  } finally {
+    rl.close();
+    stream.destroy();
+  }
+
+  return finalizePromptFootprintSummary(accumulator);
 }
 
 const parseDateParts = (
@@ -342,6 +531,8 @@ export const __test = {
   parseDateRange,
   discoverAllSessionsForUsage,
   loadCostUsageSummaryCached,
+  loadSessionPromptFootprintSummary,
+  finalizePromptFootprintSummary,
   costUsageCache,
 };
 
@@ -550,6 +741,7 @@ export const usageHandlers: GatewayRequestHandlers = {
       { date: string; count: number; sum: number; min: number; max: number; p95Max: number }
     >();
     const modelDailyMap = new Map<string, SessionDailyModelUsage>();
+    const promptFootprintAggregate = createPromptFootprintAccumulator();
 
     const emptyTotals = (): CostUsageSummary["totals"] => ({
       input: 0,
@@ -609,6 +801,14 @@ export const usageHandlers: GatewayRequestHandlers = {
 
       const channel = merged.storeEntry?.channel ?? merged.storeEntry?.origin?.provider;
       const chatType = merged.storeEntry?.chatType ?? merged.storeEntry?.origin?.chatType;
+      const promptFootprint = await loadSessionPromptFootprintSummary({
+        sessionFile: merged.sessionFile,
+        startMs,
+        endMs,
+      });
+      if (promptFootprint) {
+        mergePromptFootprintSummary(promptFootprintAggregate, promptFootprint);
+      }
 
       if (usage) {
         if (usage.messageCounts) {
@@ -739,6 +939,7 @@ export const usageHandlers: GatewayRequestHandlers = {
         modelProvider: merged.storeEntry?.modelProvider,
         model: merged.storeEntry?.model,
         usage,
+        promptFootprint,
         contextWeight: includeContextWeight
           ? (merged.storeEntry?.systemPromptReport ?? null)
           : undefined,
@@ -785,6 +986,7 @@ export const usageHandlers: GatewayRequestHandlers = {
       byAgent: Array.from(byAgentMap.entries())
         .map(([id, totals]) => ({ agentId: id, totals }))
         .toSorted((a, b) => b.totals.totalCost - a.totals.totalCost),
+      promptFootprint: finalizePromptFootprintSummary(promptFootprintAggregate),
       ...tail,
     };
 

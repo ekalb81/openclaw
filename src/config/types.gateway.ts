@@ -364,4 +364,10 @@ export type GatewayConfig = {
    * Set to 0 to disable. Default: 5.
    */
   channelHealthCheckMinutes?: number;
+  /**
+   * Maximum number of channels to initialize in parallel during gateway startup.
+   * Bounded in runtime to keep startup deterministic and avoid thundering-herd failures.
+   * Default: 3.
+   */
+  channelStartupConcurrency?: number;
 };

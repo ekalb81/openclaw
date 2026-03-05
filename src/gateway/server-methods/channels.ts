@@ -204,6 +204,7 @@ export const channelsHandlers: GatewayRequestHandlers = {
       channels: {} as Record<string, unknown>,
       channelAccounts: {} as Record<string, unknown>,
       channelDefaultAccountId: {} as Record<string, unknown>,
+      channelRestartTelemetry: runtime.restartTelemetry ?? {},
     };
     const channelsMap = payload.channels as Record<string, unknown>;
     const accountsMap = payload.channelAccounts as Record<string, unknown>;

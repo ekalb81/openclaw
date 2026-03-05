@@ -211,14 +211,19 @@ function createEscapingEntryFixture(params: { id: string; sourceBody: string }) 
   return { pluginDir, outsideEntry, linkedEntry };
 }
 
-function createPluginSdkAliasFixture() {
+function createPluginSdkAliasFixture(params?: {
+  srcFile?: string;
+  distFile?: string;
+  srcBody?: string;
+  distBody?: string;
+}) {
   const root = makeTempDir();
-  const srcFile = path.join(root, "src", "plugin-sdk", "index.ts");
-  const distFile = path.join(root, "dist", "plugin-sdk", "index.js");
+  const srcFile = path.join(root, "src", "plugin-sdk", params?.srcFile ?? "index.ts");
+  const distFile = path.join(root, "dist", "plugin-sdk", params?.distFile ?? "index.js");
   fs.mkdirSync(path.dirname(srcFile), { recursive: true });
   fs.mkdirSync(path.dirname(distFile), { recursive: true });
-  fs.writeFileSync(srcFile, "export {};\n", "utf-8");
-  fs.writeFileSync(distFile, "export {};\n", "utf-8");
+  fs.writeFileSync(srcFile, params?.srcBody ?? "export {};\n", "utf-8");
+  fs.writeFileSync(distFile, params?.distBody ?? "export {};\n", "utf-8");
   return { root, srcFile, distFile };
 }
 
@@ -707,6 +712,73 @@ describe("loadOpenClawPlugins", () => {
     expect(a?.status).toBe("disabled");
   });
 
+  it("skips importing bundled memory plugins that are disabled by memory slot", () => {
+    const bundledDir = makeTempDir();
+    const memoryADir = path.join(bundledDir, "memory-a");
+    const memoryBDir = path.join(bundledDir, "memory-b");
+    fs.mkdirSync(memoryADir, { recursive: true });
+    fs.mkdirSync(memoryBDir, { recursive: true });
+    writePlugin({
+      id: "memory-a",
+      dir: memoryADir,
+      filename: "index.cjs",
+      body: `throw new Error("memory-a should not be imported when slot selects memory-b");`,
+    });
+    writePlugin({
+      id: "memory-b",
+      dir: memoryBDir,
+      filename: "index.cjs",
+      body: `module.exports = { id: "memory-b", kind: "memory", register() {} };`,
+    });
+    fs.writeFileSync(
+      path.join(memoryADir, "openclaw.plugin.json"),
+      JSON.stringify(
+        {
+          id: "memory-a",
+          kind: "memory",
+          configSchema: EMPTY_PLUGIN_SCHEMA,
+        },
+        null,
+        2,
+      ),
+      "utf-8",
+    );
+    fs.writeFileSync(
+      path.join(memoryBDir, "openclaw.plugin.json"),
+      JSON.stringify(
+        {
+          id: "memory-b",
+          kind: "memory",
+          configSchema: EMPTY_PLUGIN_SCHEMA,
+        },
+        null,
+        2,
+      ),
+      "utf-8",
+    );
+    process.env.OPENCLAW_BUNDLED_PLUGINS_DIR = bundledDir;
+
+    const registry = loadOpenClawPlugins({
+      cache: false,
+      config: {
+        plugins: {
+          allow: ["memory-a", "memory-b"],
+          slots: { memory: "memory-b" },
+          entries: {
+            "memory-a": { enabled: true },
+            "memory-b": { enabled: true },
+          },
+        },
+      },
+    });
+
+    const a = registry.plugins.find((entry) => entry.id === "memory-a");
+    const b = registry.plugins.find((entry) => entry.id === "memory-b");
+    expect(a?.status).toBe("disabled");
+    expect(String(a?.error ?? "")).toContain('memory slot set to "memory-b"');
+    expect(b?.status).toBe("loaded");
+  });
+
   it("disables memory plugins when slot is none", () => {
     process.env.OPENCLAW_BUNDLED_PLUGINS_DIR = "/nonexistent/bundled/plugins";
     const memory = writePlugin({
@@ -804,25 +876,128 @@ describe("loadOpenClawPlugins", () => {
     });
   });
 
-  it("warns when plugins.allow is empty and non-bundled plugins are discoverable", () => {
+  it("blocks auto-discovered plugins when plugins.allow is empty", () => {
+    useNoBundledPlugins();
+    const stateDir = makeTempDir();
+    withEnv({ OPENCLAW_STATE_DIR: stateDir, CLAWDBOT_STATE_DIR: undefined }, () => {
+      const workspaceDir = path.join(stateDir, "workspace");
+      const workspacePluginDir = path.join(workspaceDir, ".openclaw", "extensions", "rogue");
+      fs.mkdirSync(workspacePluginDir, { recursive: true });
+      writePlugin({
+        id: "rogue",
+        body: `module.exports = { id: "rogue", register() {} };`,
+        dir: workspacePluginDir,
+        filename: "index.cjs",
+      });
+
+      const warnings: string[] = [];
+      const registry = loadOpenClawPlugins({
+        cache: false,
+        logger: createWarningLogger(warnings),
+        workspaceDir,
+        config: {
+          plugins: {
+            enabled: true,
+          },
+        },
+      });
+
+      const rogue = registry.plugins.find((entry) => entry.id === "rogue");
+      expect(rogue?.status).toBe("disabled");
+      expect(rogue?.error).toContain("blocked by trust policy");
+      expect(
+        registry.diagnostics.some((entry) =>
+          entry.message.includes("auto-discovered plugins require explicit plugins.allow"),
+        ),
+      ).toBe(true);
+      expect(
+        warnings.some(
+          (message) =>
+            message.includes("plugins.allow is empty") &&
+            message.includes("blocked") &&
+            message.includes("rogue"),
+        ),
+      ).toBe(true);
+    });
+  });
+
+  it("allows auto-discovered plugins when explicitly trusted in plugins.allow", () => {
+    useNoBundledPlugins();
+    const stateDir = makeTempDir();
+    withEnv({ OPENCLAW_STATE_DIR: stateDir, CLAWDBOT_STATE_DIR: undefined }, () => {
+      const workspaceDir = path.join(stateDir, "workspace");
+      const workspacePluginDir = path.join(workspaceDir, ".openclaw", "extensions", "trusted");
+      fs.mkdirSync(workspacePluginDir, { recursive: true });
+      writePlugin({
+        id: "trusted",
+        body: `module.exports = { id: "trusted", register() {} };`,
+        dir: workspacePluginDir,
+        filename: "index.cjs",
+      });
+
+      const registry = loadOpenClawPlugins({
+        cache: false,
+        workspaceDir,
+        config: {
+          plugins: {
+            allow: ["trusted"],
+          },
+        },
+      });
+
+      const trusted = registry.plugins.find((entry) => entry.id === "trusted");
+      expect(trusted?.status).toBe("loaded");
+    });
+  });
+
+  it("treats explicit plugins.load.paths as trusted load sources without plugins.allow", () => {
     useNoBundledPlugins();
     const plugin = writePlugin({
-      id: "warn-open-allow",
-      body: `module.exports = { id: "warn-open-allow", register() {} };`,
+      id: "config-path-plugin",
+      body: `module.exports = { id: "config-path-plugin", register() {} };`,
     });
-    const warnings: string[] = [];
-    loadOpenClawPlugins({
+
+    const registry = loadOpenClawPlugins({
       cache: false,
-      logger: createWarningLogger(warnings),
       config: {
         plugins: {
           load: { paths: [plugin.file] },
         },
       },
     });
-    expect(
-      warnings.some((msg) => msg.includes("plugins.allow is empty") && msg.includes(plugin.id)),
-    ).toBe(true);
+
+    const loaded = registry.plugins.find((entry) => entry.id === "config-path-plugin");
+    expect(loaded?.status).toBe("loaded");
+  });
+
+  it("supports trustAllowlistMode=warn for migration workflows", () => {
+    useNoBundledPlugins();
+    const stateDir = makeTempDir();
+    withEnv({ OPENCLAW_STATE_DIR: stateDir, CLAWDBOT_STATE_DIR: undefined }, () => {
+      const workspaceDir = path.join(stateDir, "workspace");
+      const workspacePluginDir = path.join(workspaceDir, ".openclaw", "extensions", "warn-only");
+      fs.mkdirSync(workspacePluginDir, { recursive: true });
+      writePlugin({
+        id: "warn-only",
+        body: `module.exports = { id: "warn-only", register() {} };`,
+        dir: workspacePluginDir,
+        filename: "index.cjs",
+      });
+
+      const registry = loadOpenClawPlugins({
+        cache: false,
+        workspaceDir,
+        trustAllowlistMode: "warn",
+        config: {
+          plugins: {
+            enabled: true,
+          },
+        },
+      });
+
+      const warnOnly = registry.plugins.find((entry) => entry.id === "warn-only");
+      expect(warnOnly?.status).toBe("loaded");
+    });
   });
 
   it("warns when loaded non-bundled plugin has no install/load-path provenance", () => {
@@ -1005,6 +1180,29 @@ describe("loadOpenClawPlugins", () => {
     expect(record?.status).toBe("loaded");
   });
 
+  it("supports legacy plugins importing monolithic plugin-sdk root", () => {
+    useNoBundledPlugins();
+    const plugin = writePlugin({
+      id: "legacy-root-import",
+      filename: "legacy-root-import.cjs",
+      body: `module.exports = {
+  id: "legacy-root-import",
+  configSchema: (require("openclaw/plugin-sdk").emptyPluginConfigSchema)(),
+  register() {},
+};`,
+    });
+
+    const registry = loadRegistryFromSinglePlugin({
+      plugin,
+      pluginConfig: {
+        allow: ["legacy-root-import"],
+      },
+    });
+
+    const record = registry.plugins.find((entry) => entry.id === "legacy-root-import");
+    expect(record?.status).toBe("loaded");
+  });
+
   it("prefers dist plugin-sdk alias when loader runs from dist", () => {
     const { root, distFile } = createPluginSdkAliasFixture();
 
@@ -1023,6 +1221,40 @@ describe("loadOpenClawPlugins", () => {
       __testing.resolvePluginSdkAliasFile({
         srcFile: "index.ts",
         distFile: "index.js",
+        modulePath: path.join(root, "src", "plugins", "loader.ts"),
+      }),
+    );
+    expect(resolved).toBe(srcFile);
+  });
+
+  it("prefers dist root-alias shim when loader runs from dist", () => {
+    const { root, distFile } = createPluginSdkAliasFixture({
+      srcFile: "root-alias.cjs",
+      distFile: "root-alias.cjs",
+      srcBody: "module.exports = {};\n",
+      distBody: "module.exports = {};\n",
+    });
+
+    const resolved = __testing.resolvePluginSdkAliasFile({
+      srcFile: "root-alias.cjs",
+      distFile: "root-alias.cjs",
+      modulePath: path.join(root, "dist", "plugins", "loader.js"),
+    });
+    expect(resolved).toBe(distFile);
+  });
+
+  it("prefers src root-alias shim when loader runs from src in non-production", () => {
+    const { root, srcFile } = createPluginSdkAliasFixture({
+      srcFile: "root-alias.cjs",
+      distFile: "root-alias.cjs",
+      srcBody: "module.exports = {};\n",
+      distBody: "module.exports = {};\n",
+    });
+
+    const resolved = withEnv({ NODE_ENV: undefined }, () =>
+      __testing.resolvePluginSdkAliasFile({
+        srcFile: "root-alias.cjs",
+        distFile: "root-alias.cjs",
         modulePath: path.join(root, "src", "plugins", "loader.ts"),
       }),
     );

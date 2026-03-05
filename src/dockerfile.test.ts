@@ -33,4 +33,12 @@ describe("Dockerfile", () => {
     expect(dockerfile).toContain('== "fpr" {');
     expect(dockerfile).not.toContain('\\"fpr\\"');
   });
+
+  it("verifies Bun archive integrity before install", async () => {
+    const dockerfile = await readFile(dockerfilePath, "utf8");
+    expect(dockerfile).toContain("ARG OPENCLAW_BUN_VERSION");
+    expect(dockerfile).toContain("SHASUMS256.txt");
+    expect(dockerfile).toContain("sha256sum /tmp/bun.zip");
+    expect(dockerfile).toContain("Bun archive checksum mismatch");
+  });
 });

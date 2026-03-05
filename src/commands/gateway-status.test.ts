@@ -182,6 +182,14 @@ describe("gateway-status command", () => {
     expect(targets.length).toBeGreaterThanOrEqual(2);
     expect(targets[0]?.health).toBeTruthy();
     expect(targets[0]?.summary).toBeTruthy();
+    expect(targets[0]?.channelRestartSummary).toEqual(
+      expect.objectContaining({
+        accounts: expect.any(Number),
+        retrying: expect.any(Number),
+        exhausted: expect.any(Number),
+        manuallyStopped: expect.any(Number),
+      }),
+    );
   });
 
   it("supports SSH tunnel targets", async () => {

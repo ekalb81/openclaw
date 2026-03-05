@@ -3,6 +3,8 @@ import { describe, expect, it, vi } from "vitest";
 import type { SessionsListResult } from "../types.ts";
 import { renderChat, type ChatProps } from "./chat.ts";
 
+const describeDom = typeof document === "undefined" ? describe.skip : describe;
+
 function createSessions(): SessionsListResult {
   return {
     ts: 0,
@@ -49,7 +51,7 @@ function createProps(overrides: Partial<ChatProps> = {}): ChatProps {
   };
 }
 
-describe("chat view", () => {
+describeDom("chat view", () => {
   it("renders compacting indicator as a badge", () => {
     const container = document.createElement("div");
     render(
@@ -223,5 +225,111 @@ describe("chat view", () => {
     newSessionButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
     expect(onNewSession).toHaveBeenCalledTimes(1);
     expect(container.textContent).not.toContain("Stop");
+  });
+
+  it("shows Queue while a run is active even before stream text arrives", () => {
+    const container = document.createElement("div");
+    render(
+      renderChat(
+        createProps({
+          sending: false,
+          stream: null,
+          canAbort: true,
+          onAbort: () => undefined,
+        }),
+      ),
+      container,
+    );
+
+    const sendButton = container.querySelector(".chat-compose__actions .btn.primary");
+    expect(sendButton?.textContent).toContain("Queue");
+  });
+
+  it("renders streaming bubble without fade-in class so pulse animation stays active", () => {
+    const container = document.createElement("div");
+    render(
+      renderChat(
+        createProps({
+          stream: "Working on it…",
+          streamStartedAt: 123,
+        }),
+      ),
+      container,
+    );
+
+    const streamBubble = container.querySelector(".chat-group.assistant .chat-bubble.streaming");
+    expect(streamBubble).not.toBeNull();
+    expect(streamBubble?.classList.contains("fade-in")).toBe(false);
+  });
+
+  it("transitions indicators from reading to stream to final", () => {
+    const container = document.createElement("div");
+
+    render(
+      renderChat(
+        createProps({
+          stream: "",
+          streamStartedAt: 100,
+        }),
+      ),
+      container,
+    );
+    expect(container.querySelector(".chat-reading-indicator")).not.toBeNull();
+    expect(container.querySelector(".chat-bubble.streaming")).toBeNull();
+
+    render(
+      renderChat(
+        createProps({
+          stream: "Working on it",
+          streamStartedAt: 100,
+        }),
+      ),
+      container,
+    );
+    expect(container.querySelector(".chat-reading-indicator")).toBeNull();
+    expect(container.querySelector(".chat-bubble.streaming")).not.toBeNull();
+
+    render(
+      renderChat(
+        createProps({
+          stream: null,
+          streamStartedAt: null,
+          messages: [
+            {
+              role: "assistant",
+              content: [{ type: "text", text: "Done" }],
+              timestamp: 101,
+            },
+          ],
+        }),
+      ),
+      container,
+    );
+    expect(container.querySelector(".chat-reading-indicator")).toBeNull();
+    expect(container.querySelector(".chat-bubble.streaming")).toBeNull();
+    expect(container.textContent).toContain("Done");
+  });
+
+  it("renders placeholder for empty assistant turns", () => {
+    const container = document.createElement("div");
+    render(
+      renderChat(
+        createProps({
+          messages: [
+            {
+              role: "assistant",
+              content: [{ type: "text", text: "" }],
+              timestamp: 123,
+            },
+          ],
+        }),
+      ),
+      container,
+    );
+
+    const placeholder = container.querySelector(".chat-empty-assistant");
+    expect(placeholder).not.toBeNull();
+    expect(placeholder?.textContent).toContain("No visible text response.");
+    expect(container.querySelector(".chat-group-footer")).not.toBeNull();
   });
 });

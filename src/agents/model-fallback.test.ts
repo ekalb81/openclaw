@@ -1159,6 +1159,132 @@ describe("runWithModelFallback", () => {
       expect(run).toHaveBeenNthCalledWith(2, "groq", "llama-3.3-70b-versatile"); // Cross-provider works
     });
   });
+
+  describe("cost-aware model routing tiers", () => {
+    it("uses tier chains and escalates to higher tiers when enabled", async () => {
+      const cfg = makeCfg({
+        agents: {
+          defaults: {
+            model: {
+              primary: "openai/gpt-4.1-mini",
+              fallbacks: ["anthropic/claude-haiku-3-5"],
+            },
+            modelRouting: {
+              enabled: true,
+              tier: "economy",
+              tierOrder: ["economy", "balanced", "premium"],
+              tiers: {
+                economy: {
+                  primary: "openai/gpt-5-mini",
+                  fallbacks: ["openrouter/openai/gpt-4.1-mini"],
+                },
+                balanced: {
+                  primary: "anthropic/claude-sonnet-4-5",
+                },
+                premium: {
+                  primary: "openai/gpt-5.2",
+                },
+              },
+            },
+          },
+        },
+      });
+
+      const run = vi.fn().mockImplementation(async (provider: string, model: string) => {
+        if (provider === "anthropic" && model === "claude-sonnet-4-5") {
+          return "ok";
+        }
+        throw Object.assign(new Error("rate limited"), { status: 429 });
+      });
+
+      const result = await runWithModelFallback({
+        cfg,
+        provider: "openai",
+        model: "gpt-4.1-mini",
+        run,
+      });
+
+      expect(result.result).toBe("ok");
+      expect(run.mock.calls).toEqual([
+        ["openai", "gpt-4.1-mini"],
+        ["openai", "gpt-5-mini"],
+        ["openrouter", "openai/gpt-4.1-mini"],
+        ["anthropic", "claude-sonnet-4-5"],
+      ]);
+    });
+
+    it("falls back to legacy model list when routing tiers are enabled but unset", async () => {
+      const cfg = makeCfg({
+        agents: {
+          defaults: {
+            model: {
+              primary: "openai/gpt-4.1-mini",
+              fallbacks: ["anthropic/claude-haiku-3-5"],
+            },
+            modelRouting: {
+              enabled: true,
+              tier: "economy",
+            },
+          },
+        },
+      });
+
+      const run = vi
+        .fn()
+        .mockRejectedValueOnce(Object.assign(new Error("rate limited"), { status: 429 }))
+        .mockResolvedValueOnce("ok");
+
+      const result = await runWithModelFallback({
+        cfg,
+        provider: "openai",
+        model: "gpt-4.1-mini",
+        run,
+      });
+
+      expect(result.result).toBe("ok");
+      expect(run.mock.calls).toEqual([
+        ["openai", "gpt-4.1-mini"],
+        ["anthropic", "claude-haiku-3-5"],
+      ]);
+    });
+
+    it("keeps fallbacksOverride authoritative when routing tiers are enabled", async () => {
+      const cfg = makeCfg({
+        agents: {
+          defaults: {
+            modelRouting: {
+              enabled: true,
+              tier: "economy",
+              tiers: {
+                economy: {
+                  primary: "openai/gpt-5-mini",
+                },
+              },
+            },
+          },
+        },
+      });
+
+      const run = vi
+        .fn()
+        .mockRejectedValueOnce(Object.assign(new Error("rate limited"), { status: 429 }))
+        .mockResolvedValueOnce("ok");
+
+      const result = await runWithModelFallback({
+        cfg,
+        provider: "openai",
+        model: "gpt-4.1-mini",
+        fallbacksOverride: ["google/gemini-2.5-flash"],
+        run,
+      });
+
+      expect(result.result).toBe("ok");
+      expect(run.mock.calls).toEqual([
+        ["openai", "gpt-4.1-mini"],
+        ["google", "gemini-2.5-flash"],
+      ]);
+    });
+  });
 });
 
 describe("runWithImageModelFallback", () => {

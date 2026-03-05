@@ -52,8 +52,36 @@ Context window is model-specific. OpenClaw uses the model definition from the co
 
 - **Compaction**: summarises and **persists** in JSONL.
 - **Session pruning**: trims old **tool results** only, **in-memory**, per request.
+- **Tool-result context compaction**: summarizes stale tool outputs in-memory before a prompt is sent.
 
 See [/concepts/session-pruning](/concepts/session-pruning) for pruning details.
+
+## Tool-result context compaction
+
+OpenClaw now summarizes stale tool outputs before dispatching the next prompt. This keeps
+raw tool payloads in the transcript for debugging, while reducing prompt footprint in active
+context.
+
+Defaults (`agents.defaults.compaction.toolResultContext`):
+
+- `enabled: true`
+- `maxToolPayloadChars: 24000`
+- `summaryAfterTurns: 2`
+- `maxToolMessagesInContext: 8`
+
+Disable with:
+
+```json5
+{
+  agents: {
+    defaults: {
+      compaction: {
+        toolResultContext: { enabled: false },
+      },
+    },
+  },
+}
+```
 
 ## OpenAI server-side compaction
 

@@ -5,6 +5,7 @@ import {
   channelsListCommand,
   channelsLogsCommand,
   channelsRemoveCommand,
+  channelsRouteCommand,
   channelsResolveCommand,
   channelsStatusCommand,
 } from "../commands/channels.js";
@@ -65,6 +66,10 @@ function runChannelsCommandWithDanger(action: () => Promise<void>, label: string
     defaultRuntime.error(danger(`${label}: ${String(err)}`));
     defaultRuntime.exit(1);
   });
+}
+
+function collectOptionValues(value: string, previous: string[]): string[] {
+  return [...previous, value];
 }
 
 export function registerChannelsCli(program: Command) {
@@ -146,6 +151,28 @@ export function registerChannelsCli(program: Command) {
           },
           defaultRuntime,
         );
+      });
+    });
+
+  channels
+    .command("route")
+    .description("Inspect route resolution for synthetic inbound channel context")
+    .option("--channel <name>", `Channel (${channelNames})`)
+    .option("--account <id>", "Account id (default when omitted)")
+    .option("--peer-kind <kind>", "Peer kind (direct|group|channel)", "direct")
+    .option("--peer <id>", "Peer id")
+    .option("--parent-peer-kind <kind>", "Parent peer kind (direct|group|channel)", "channel")
+    .option("--parent-peer <id>", "Parent peer id (for thread/child routing fallback)")
+    .option("--guild-id <id>", "Guild id (Discord)")
+    .option("--team-id <id>", "Team/workspace id (Slack/Teams)")
+    .option("--role <id>", "Role id (repeat or comma-separate)", collectOptionValues, [])
+    .option("--thread-id <id>", "Thread/topic id for derived thread session key")
+    .option("--thread-suffix", "Append :thread:<id> suffix in derived thread key", true)
+    .option("--no-thread-suffix", "Disable thread suffix; keep base session key")
+    .option("--json", "Output JSON", false)
+    .action(async (opts) => {
+      await runChannelsCommand(async () => {
+        await channelsRouteCommand(opts, defaultRuntime);
       });
     });
 

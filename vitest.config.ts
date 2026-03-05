@@ -8,27 +8,60 @@ const isCI = process.env.CI === "true" || process.env.GITHUB_ACTIONS === "true";
 const isWindows = process.platform === "win32";
 const localWorkers = Math.max(4, Math.min(16, os.cpus().length));
 const ciWorkers = isWindows ? 2 : 3;
+const pluginSdkSubpaths = [
+  "account-id",
+  "core",
+  "compat",
+  "telegram",
+  "discord",
+  "slack",
+  "signal",
+  "imessage",
+  "whatsapp",
+  "line",
+  "msteams",
+  "acpx",
+  "bluebubbles",
+  "copilot-proxy",
+  "device-pair",
+  "diagnostics-otel",
+  "diffs",
+  "feishu",
+  "google-gemini-cli-auth",
+  "googlechat",
+  "irc",
+  "llm-task",
+  "lobster",
+  "matrix",
+  "mattermost",
+  "memory-core",
+  "memory-lancedb",
+  "minimax-portal-auth",
+  "nextcloud-talk",
+  "nostr",
+  "open-prose",
+  "phone-control",
+  "qwen-portal-auth",
+  "synology-chat",
+  "talk-voice",
+  "test-utils",
+  "thread-ownership",
+  "tlon",
+  "twitch",
+  "voice-call",
+  "zalo",
+  "zalouser",
+  "keyed-async-queue",
+] as const;
 
 export default defineConfig({
   resolve: {
     // Keep this ordered: the base `openclaw/plugin-sdk` alias is a prefix match.
     alias: [
-      {
-        find: "openclaw/plugin-sdk/account-id",
-        replacement: path.join(repoRoot, "src", "plugin-sdk", "account-id.ts"),
-      },
-      {
-        find: "openclaw/plugin-sdk/core",
-        replacement: path.join(repoRoot, "src", "plugin-sdk", "core.ts"),
-      },
-      {
-        find: "openclaw/plugin-sdk/telegram",
-        replacement: path.join(repoRoot, "src", "plugin-sdk", "telegram.ts"),
-      },
-      {
-        find: "openclaw/plugin-sdk/keyed-async-queue",
-        replacement: path.join(repoRoot, "src", "plugin-sdk", "keyed-async-queue.ts"),
-      },
+      ...pluginSdkSubpaths.map((subpath) => ({
+        find: `openclaw/plugin-sdk/${subpath}`,
+        replacement: path.join(repoRoot, "src", "plugin-sdk", `${subpath}.ts`),
+      })),
       {
         find: "openclaw/plugin-sdk",
         replacement: path.join(repoRoot, "src", "plugin-sdk", "index.ts"),
@@ -49,6 +82,9 @@ export default defineConfig({
       "src/**/*.test.ts",
       "extensions/**/*.test.ts",
       "test/**/*.test.ts",
+      // Keep reliability-critical UI suite that runs in Node in the default CI lane.
+      "ui/src/ui/app-gateway.node.test.ts",
+      "ui/src/ui/app-settings.test.ts",
       "ui/src/ui/views/agents-utils.test.ts",
       "ui/src/ui/views/usage-render-details.test.ts",
       "ui/src/ui/controllers/agents.test.ts",
@@ -103,8 +139,6 @@ export default defineConfig({
         // Large integration surfaces; validated via e2e/manual/contract tests.
         "src/acp/**",
         "src/agents/**",
-        "src/channels/**",
-        "src/gateway/**",
         "src/line/**",
         "src/media-understanding/**",
         "src/node-host/**",

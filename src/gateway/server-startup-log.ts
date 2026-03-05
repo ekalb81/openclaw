@@ -5,6 +5,21 @@ import type { loadConfig } from "../config/config.js";
 import { getResolvedLoggerSettings } from "../logging.js";
 import { collectEnabledInsecureOrDangerousFlags } from "../security/dangerous-config-flags.js";
 
+const DEFAULT_CHANNEL_STARTUP_CONCURRENCY = 3;
+const MAX_CHANNEL_STARTUP_CONCURRENCY = 16;
+
+function resolveChannelStartupConcurrency(cfg: ReturnType<typeof loadConfig>): number {
+  const raw = cfg.gateway?.channelStartupConcurrency;
+  if (typeof raw !== "number" || !Number.isFinite(raw)) {
+    return DEFAULT_CHANNEL_STARTUP_CONCURRENCY;
+  }
+  const normalized = Math.floor(raw);
+  return Math.min(
+    MAX_CHANNEL_STARTUP_CONCURRENCY,
+    Math.max(1, normalized || DEFAULT_CHANNEL_STARTUP_CONCURRENCY),
+  );
+}
+
 export function logGatewayStartup(params: {
   cfg: ReturnType<typeof loadConfig>;
   bindHost: string;
@@ -29,6 +44,7 @@ export function logGatewayStartup(params: {
     params.bindHosts && params.bindHosts.length > 0 ? params.bindHosts : [params.bindHost];
   const listenEndpoints = hosts.map((host) => `${scheme}://${formatHost(host)}:${params.port}`);
   params.log.info(`listening on ${listenEndpoints.join(", ")} (PID ${process.pid})`);
+  params.log.info(`channel startup concurrency: ${resolveChannelStartupConcurrency(params.cfg)}`);
   params.log.info(`log file: ${getResolvedLoggerSettings().file}`);
   if (params.isNixMode) {
     params.log.info("gateway: running in Nix mode (config managed externally)");

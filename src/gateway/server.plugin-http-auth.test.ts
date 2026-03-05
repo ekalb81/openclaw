@@ -515,6 +515,65 @@ describe("gateway plugin HTTP auth boundary", () => {
     });
   });
 
+  test("covers protected plugin-route auth mode matrix on HTTP surface", async () => {
+    const matrix: Array<{
+      name: string;
+      resolvedAuth: Parameters<typeof withGatewayServer>[0]["resolvedAuth"];
+      unauthenticatedStatus: number;
+      authenticatedHeader?: string;
+      authenticatedStatus?: number;
+    }> = [
+      {
+        name: "token",
+        resolvedAuth: AUTH_TOKEN,
+        unauthenticatedStatus: 401,
+        authenticatedHeader: "Bearer test-token",
+        authenticatedStatus: 200,
+      },
+      {
+        name: "password",
+        resolvedAuth: {
+          mode: "password",
+          token: undefined,
+          password: "test-password",
+          allowTailscale: false,
+        },
+        unauthenticatedStatus: 401,
+        authenticatedHeader: "Bearer test-password",
+        authenticatedStatus: 200,
+      },
+      {
+        name: "none",
+        resolvedAuth: AUTH_NONE,
+        unauthenticatedStatus: 200,
+      },
+    ];
+
+    for (const scenario of matrix) {
+      await withGatewayServer({
+        prefix: `openclaw-plugin-http-auth-surface-matrix-${scenario.name}-`,
+        resolvedAuth: scenario.resolvedAuth,
+        overrides: createProtectedPluginAuthOverrides(createCanonicalizedChannelPluginHandler()),
+        run: async (server) => {
+          const unauthenticated = await sendRequest(server, {
+            path: "/api/channels/nostr/default/profile",
+          });
+          expect(unauthenticated.res.statusCode).toBe(scenario.unauthenticatedStatus);
+
+          if (!scenario.authenticatedHeader) {
+            return;
+          }
+
+          const authenticated = await sendRequest(server, {
+            path: "/api/channels/nostr/default/profile",
+            authorization: scenario.authenticatedHeader,
+          });
+          expect(authenticated.res.statusCode).toBe(scenario.authenticatedStatus ?? 200);
+        },
+      });
+    }
+  });
+
   test("rejects unauthenticated plugin-channel fuzz corpus variants", async () => {
     const handlePluginRequest = createCanonicalizedChannelPluginHandler();
 

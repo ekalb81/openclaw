@@ -1,12 +1,10 @@
-import fs from "node:fs/promises";
 import { resolveHumanDelayConfig } from "../../agents/identity.js";
 import { resolveTextChunkLimit } from "../../auto-reply/chunk.js";
-import { dispatchInboundMessage } from "../../auto-reply/dispatch.js";
 import {
-  clearHistoryEntriesIfEnabled,
-  DEFAULT_GROUP_HISTORY_LIMIT,
-  type HistoryEntry,
-} from "../../auto-reply/reply/history.js";
+  clearPendingGroupHistoryAfterDispatch,
+  dispatchInboundMessage,
+} from "../../auto-reply/dispatch.js";
+import { DEFAULT_GROUP_HISTORY_LIMIT, type HistoryEntry } from "../../auto-reply/reply/history.js";
 import { createReplyDispatcher } from "../../auto-reply/reply/reply-dispatcher.js";
 import {
   createChannelInboundDebouncer,
@@ -22,7 +20,6 @@ import {
 } from "../../config/runtime-group-policy.js";
 import { readSessionUpdatedAt, resolveStorePath } from "../../config/sessions.js";
 import { danger, logVerbose, shouldLogVerbose, warn } from "../../globals.js";
-import { normalizeScpRemoteHost } from "../../infra/scp-host.js";
 import { waitForTransportReady } from "../../infra/transport-ready.js";
 import {
   isInboundPathAllowed,
@@ -51,36 +48,9 @@ import {
   resolveIMessageInboundDecision,
 } from "./inbound-processing.js";
 import { parseIMessageNotification } from "./parse-notification.js";
+import { resolveIMessageRemoteHost } from "./remote-host.js";
 import { normalizeAllowList, resolveRuntime } from "./runtime.js";
 import type { IMessagePayload, MonitorIMessageOpts } from "./types.js";
-
-/**
- * Try to detect remote host from an SSH wrapper script like:
- *   exec ssh -T openclaw@192.168.64.3 /opt/homebrew/bin/imsg "$@"
- *   exec ssh -T mac-mini imsg "$@"
- * Returns the user@host or host portion if found, undefined otherwise.
- */
-async function detectRemoteHostFromCliPath(cliPath: string): Promise<string | undefined> {
-  try {
-    // Expand ~ to home directory
-    const expanded = cliPath.startsWith("~")
-      ? cliPath.replace(/^~/, process.env.HOME ?? "")
-      : cliPath;
-    const content = await fs.readFile(expanded, "utf8");
-
-    // Match user@host pattern first (e.g., openclaw@192.168.64.3)
-    const userHostMatch = content.match(/\bssh\b[^\n]*?\s+([a-zA-Z0-9._-]+@[a-zA-Z0-9._-]+)/);
-    if (userHostMatch) {
-      return userHostMatch[1];
-    }
-
-    // Fallback: match host-only before imsg command (e.g., ssh -T mac-mini imsg)
-    const hostOnlyMatch = content.match(/\bssh\b[^\n]*?\s+([a-zA-Z][a-zA-Z0-9._-]*)\s+\S*\bimsg\b/);
-    return hostOnlyMatch?.[1];
-  } catch {
-    return undefined;
-  }
-}
 
 export async function monitorIMessageProvider(opts: MonitorIMessageOpts = {}): Promise<void> {
   const runtime = resolveRuntime(opts);
@@ -132,25 +102,11 @@ export async function monitorIMessageProvider(opts: MonitorIMessageOpts = {}): P
     accountId: accountInfo.accountId,
   });
 
-  // Resolve remoteHost: explicit config, or auto-detect from SSH wrapper script.
-  // Accept only a safe host token to avoid option/argument injection into SCP.
-  const configuredRemoteHost = normalizeScpRemoteHost(imessageCfg.remoteHost);
-  if (imessageCfg.remoteHost && !configuredRemoteHost) {
-    logVerbose("imessage: ignoring unsafe channels.imessage.remoteHost value");
-  }
-
-  let remoteHost = configuredRemoteHost;
-  if (!remoteHost && cliPath && cliPath !== "imsg") {
-    const detected = await detectRemoteHostFromCliPath(cliPath);
-    const normalizedDetected = normalizeScpRemoteHost(detected);
-    if (detected && !normalizedDetected) {
-      logVerbose("imessage: ignoring unsafe auto-detected remoteHost from cliPath");
-    }
-    remoteHost = normalizedDetected;
-    if (remoteHost) {
-      logVerbose(`imessage: detected remoteHost=${remoteHost} from cliPath`);
-    }
-  }
+  const remoteHost = await resolveIMessageRemoteHost({
+    configuredRemoteHost: imessageCfg.remoteHost,
+    cliPath,
+    logVerbose,
+  });
 
   const { debouncer: inboundDebouncer } = createChannelInboundDebouncer<{
     message: IMessagePayload;
@@ -409,22 +365,15 @@ export async function monitorIMessageProvider(opts: MonitorIMessageOpts = {}): P
       },
     });
 
+    clearPendingGroupHistoryAfterDispatch({
+      isGroup: decision.isGroup,
+      historyKey: decision.historyKey,
+      historyLimit: historyLimit,
+      historyMap: groupHistories,
+    });
+
     if (!queuedFinal) {
-      if (decision.isGroup && decision.historyKey) {
-        clearHistoryEntriesIfEnabled({
-          historyMap: groupHistories,
-          historyKey: decision.historyKey,
-          limit: historyLimit,
-        });
-      }
       return;
-    }
-    if (decision.isGroup && decision.historyKey) {
-      clearHistoryEntriesIfEnabled({
-        historyMap: groupHistories,
-        historyKey: decision.historyKey,
-        limit: historyLimit,
-      });
     }
   }
 

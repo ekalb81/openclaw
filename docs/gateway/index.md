@@ -8,6 +8,7 @@ title: "Gateway Runbook"
 # Gateway runbook
 
 Use this page for day-1 startup and day-2 operations of the Gateway service.
+For bind/auth/proxy/tailscale exposure choices, see [Deployment hardening](/gateway/deployment-hardening).
 
 <CardGroup cols={2}>
   <Card title="Deep troubleshooting" icon="siren" href="/gateway/troubleshooting">

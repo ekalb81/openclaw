@@ -8,6 +8,7 @@ import {
   applySettings,
   loadCron,
   refreshActiveTab,
+  resolveChatReliabilitySettings,
   setLastActiveSessionKey,
 } from "./app-settings.ts";
 import { handleAgentEvent, resetToolStream, type AgentEventPayload } from "./app-tool-stream.ts";
@@ -69,12 +70,14 @@ type GatewayHost = {
   assistantName: string;
   assistantAvatar: string | null;
   assistantAgentId: string | null;
+  serverVersion: string | null;
   sessionKey: string;
   chatRunId: string | null;
   refreshSessionsAfterChat: Set<string>;
   execApprovalQueue: ExecApprovalRequest[];
   execApprovalError: string | null;
   updateAvailable: UpdateAvailable | null;
+  chatGapRecoveryTimer?: ReturnType<typeof setTimeout> | null;
 };
 
 type SessionDefaultsSnapshot = {
@@ -83,6 +86,40 @@ type SessionDefaultsSnapshot = {
   mainSessionKey?: string;
   scope?: string;
 };
+
+export function resolveControlUiClientVersion(params: {
+  gatewayUrl: string;
+  serverVersion: string | null;
+  pageUrl?: string;
+}): string | undefined {
+  const serverVersion = params.serverVersion?.trim();
+  if (!serverVersion) {
+    return undefined;
+  }
+  const pageUrl =
+    params.pageUrl ?? (typeof window === "undefined" ? undefined : window.location.href);
+  if (!pageUrl) {
+    return undefined;
+  }
+  try {
+    const page = new URL(pageUrl);
+    const gateway = new URL(params.gatewayUrl, page);
+    const allowedProtocols = new Set(["ws:", "wss:", "http:", "https:"]);
+    if (!allowedProtocols.has(gateway.protocol) || gateway.host !== page.host) {
+      return undefined;
+    }
+    return serverVersion;
+  } catch {
+    return undefined;
+  }
+}
+
+function resolveSessionDefaults(host: GatewayHost): SessionDefaultsSnapshot {
+  const snapshot = host.hello?.snapshot as
+    | { sessionDefaults?: SessionDefaultsSnapshot }
+    | undefined;
+  return snapshot?.sessionDefaults ?? {};
+}
 
 function normalizeSessionKeyForDefaults(
   value: string | undefined,
@@ -136,6 +173,56 @@ function applySessionDefaults(host: GatewayHost, defaults?: SessionDefaultsSnaps
   }
 }
 
+function normalizeChatEventPayloadSessionKey(
+  host: GatewayHost,
+  payload: ChatEventPayload | undefined,
+): ChatEventPayload | undefined {
+  if (!payload?.sessionKey) {
+    return payload;
+  }
+  const defaults = resolveSessionDefaults(host);
+  const normalizedPayloadKey = normalizeSessionKeyForDefaults(payload.sessionKey, defaults);
+  const normalizedHostKey = normalizeSessionKeyForDefaults(host.sessionKey, defaults);
+  if (!normalizedPayloadKey || normalizedPayloadKey !== normalizedHostKey) {
+    return payload;
+  }
+  if (payload.sessionKey === host.sessionKey) {
+    return payload;
+  }
+  return { ...payload, sessionKey: host.sessionKey };
+}
+
+function clearActiveChatRunState(host: GatewayHost) {
+  host.chatRunId = null;
+  (host as unknown as { chatStream: string | null }).chatStream = null;
+  (host as unknown as { chatStreamStartedAt: number | null }).chatStreamStartedAt = null;
+  (
+    host as unknown as { chatRunWatchdogLastActivityAtMs: number | null }
+  ).chatRunWatchdogLastActivityAtMs = null;
+}
+
+function clearPendingGapRecovery(host: GatewayHost) {
+  const timer = host.chatGapRecoveryTimer ?? null;
+  if (timer !== null) {
+    clearTimeout(timer);
+    host.chatGapRecoveryTimer = null;
+  }
+}
+
+async function recoverChatAfterEventGap(host: GatewayHost) {
+  clearActiveChatRunState(host);
+  resetToolStream(host as unknown as Parameters<typeof resetToolStream>[0]);
+  const client = host.client as { request?: unknown } | null;
+  if (!host.connected || !client || typeof client.request !== "function") {
+    return;
+  }
+  try {
+    await loadChatHistory(host as unknown as OpenClawApp);
+  } catch {
+    // best-effort recovery
+  }
+}
+
 export function connectGateway(host: GatewayHost) {
   host.lastError = null;
   host.lastErrorCode = null;
@@ -145,17 +232,23 @@ export function connectGateway(host: GatewayHost) {
   host.execApprovalError = null;
 
   const previousClient = host.client;
+  const clientVersion = resolveControlUiClientVersion({
+    gatewayUrl: host.settings.gatewayUrl,
+    serverVersion: host.serverVersion,
+  });
   const client = new GatewayBrowserClient({
     url: host.settings.gatewayUrl,
     token: host.settings.token.trim() ? host.settings.token : undefined,
     password: host.password.trim() ? host.password : undefined,
     clientName: "openclaw-control-ui",
+    clientVersion,
     mode: "webchat",
     instanceId: host.clientInstanceId,
     onHello: (hello) => {
       if (host.client !== client) {
         return;
       }
+      clearPendingGapRecovery(host);
       host.connected = true;
       host.lastError = null;
       host.lastErrorCode = null;
@@ -163,9 +256,7 @@ export function connectGateway(host: GatewayHost) {
       applySnapshot(host, hello);
       // Reset orphaned chat run state from before disconnect.
       // Any in-flight run's final event was lost during the disconnect window.
-      host.chatRunId = null;
-      (host as unknown as { chatStream: string | null }).chatStream = null;
-      (host as unknown as { chatStreamStartedAt: number | null }).chatStreamStartedAt = null;
+      clearActiveChatRunState(host);
       resetToolStream(host as unknown as Parameters<typeof resetToolStream>[0]);
       void loadAssistantIdentity(host as unknown as OpenClawApp);
       void loadAgents(host as unknown as OpenClawApp);
@@ -178,6 +269,7 @@ export function connectGateway(host: GatewayHost) {
       if (host.client !== client) {
         return;
       }
+      clearPendingGapRecovery(host);
       host.connected = false;
       // Code 1012 = Service Restart (expected during config saves, don't show as error)
       host.lastErrorCode =
@@ -206,6 +298,18 @@ export function connectGateway(host: GatewayHost) {
       }
       host.lastError = `event gap detected (expected seq ${expected}, got ${received}); refresh recommended`;
       host.lastErrorCode = null;
+      const reliability = resolveChatReliabilitySettings(host.settings);
+      if (!reliability.autoRecoverOnGap) {
+        return;
+      }
+      clearPendingGapRecovery(host);
+      host.chatGapRecoveryTimer = setTimeout(() => {
+        host.chatGapRecoveryTimer = null;
+        if (host.client !== client) {
+          return;
+        }
+        void recoverChatAfterEventGap(host);
+      }, reliability.gapRecoveryDelayMs);
     },
   });
   host.client = client;
@@ -244,15 +348,21 @@ function handleTerminalChatEvent(
 }
 
 function handleChatGatewayEvent(host: GatewayHost, payload: ChatEventPayload | undefined) {
-  if (payload?.sessionKey) {
+  const normalizedPayload = normalizeChatEventPayloadSessionKey(host, payload);
+  if (normalizedPayload?.sessionKey) {
     setLastActiveSessionKey(
       host as unknown as Parameters<typeof setLastActiveSessionKey>[0],
-      payload.sessionKey,
+      normalizedPayload.sessionKey,
     );
   }
-  const state = handleChatEvent(host as unknown as OpenClawApp, payload);
-  handleTerminalChatEvent(host, payload, state);
-  if (state === "final" && shouldReloadHistoryForFinalEvent(payload)) {
+  const state = handleChatEvent(host as unknown as OpenClawApp, normalizedPayload);
+  if (host.chatRunId) {
+    (
+      host as unknown as { chatRunWatchdogLastActivityAtMs: number }
+    ).chatRunWatchdogLastActivityAtMs = Date.now();
+  }
+  handleTerminalChatEvent(host, normalizedPayload, state);
+  if (state === "final" && shouldReloadHistoryForFinalEvent(normalizedPayload)) {
     void loadChatHistory(host as unknown as OpenClawApp);
   }
 }
@@ -267,6 +377,11 @@ function handleGatewayEventUnsafe(host: GatewayHost, evt: GatewayEventFrame) {
   }
 
   if (evt.event === "agent") {
+    if (host.chatRunId) {
+      (
+        host as unknown as { chatRunWatchdogLastActivityAtMs: number }
+      ).chatRunWatchdogLastActivityAtMs = Date.now();
+    }
     if (host.onboarding) {
       return;
     }

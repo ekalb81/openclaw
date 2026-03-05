@@ -1182,6 +1182,7 @@
                       "gateway/configuration-reference",
                       "gateway/configuration-examples",
                       "gateway/authentication",
+                      "auth-credential-semantics",
                       "gateway/secrets",
                       "gateway/secrets-plan-contract",
                       "gateway/trusted-proxy-auth",
@@ -1199,6 +1200,7 @@
                     "group": "Security and sandboxing",
                     "pages": [
                       "gateway/security/index",
+                      "gateway/deployment-hardening",
                       "gateway/sandboxing",
                       "gateway/sandbox-vs-tool-policy-vs-elevated"
                     ]
@@ -1320,6 +1322,7 @@
               {
                 "group": "Technical reference",
                 "pages": [
+                  "reference/architecture-map",
                   "reference/wizard",
                   "reference/token-use",
                   "reference/secretref-credential-surface",

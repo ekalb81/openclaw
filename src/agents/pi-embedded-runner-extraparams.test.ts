@@ -1,6 +1,7 @@
 import type { StreamFn } from "@mariozechner/pi-agent-core";
 import type { Context, Model, SimpleStreamOptions } from "@mariozechner/pi-ai";
 import { describe, expect, it } from "vitest";
+import type { OpenClawConfig } from "../config/config.js";
 import { applyExtraParamsToAgent, resolveExtraParams } from "./pi-embedded-runner.js";
 
 describe("resolveExtraParams", () => {
@@ -612,6 +613,105 @@ describe("applyExtraParamsToAgent", () => {
       "HTTP-Referer": "https://openclaw.ai",
       "X-Title": "OpenClaw",
       "X-Custom": "1",
+    });
+  });
+
+  it("applies tiered OpenRouter provider routing passthrough when enabled", () => {
+    const routingSnapshots: unknown[] = [];
+    const baseStreamFn: StreamFn = (model) => {
+      routingSnapshots.push(
+        (model as { compat?: { openRouterRouting?: unknown } }).compat?.openRouterRouting,
+      );
+      return {} as ReturnType<StreamFn>;
+    };
+    const agent = { streamFn: baseStreamFn };
+    const cfg = {
+      agents: {
+        defaults: {
+          modelRouting: {
+            enabled: true,
+            tier: "economy",
+            openRouter: {
+              providerByTier: {
+                economy: {
+                  order: ["anthropic", "openai"],
+                  allow_fallbacks: true,
+                },
+              },
+            },
+          },
+        },
+      },
+    } satisfies OpenClawConfig;
+
+    applyExtraParamsToAgent(agent, cfg, "openrouter", "auto");
+
+    const model = {
+      api: "openai-completions",
+      provider: "openrouter",
+      id: "auto",
+    } as Model<"openai-completions">;
+    const context: Context = { messages: [] };
+    void agent.streamFn?.(model, context, {});
+
+    expect(routingSnapshots).toHaveLength(1);
+    expect(routingSnapshots[0]).toEqual({
+      order: ["anthropic", "openai"],
+      allow_fallbacks: true,
+    });
+  });
+
+  it("prefers explicit model provider routing over tiered OpenRouter defaults", () => {
+    const routingSnapshots: unknown[] = [];
+    const baseStreamFn: StreamFn = (model) => {
+      routingSnapshots.push(
+        (model as { compat?: { openRouterRouting?: unknown } }).compat?.openRouterRouting,
+      );
+      return {} as ReturnType<StreamFn>;
+    };
+    const agent = { streamFn: baseStreamFn };
+    const cfg = {
+      agents: {
+        defaults: {
+          modelRouting: {
+            enabled: true,
+            tier: "economy",
+            openRouter: {
+              providerByTier: {
+                economy: {
+                  order: ["anthropic"],
+                },
+              },
+            },
+          },
+          models: {
+            "openrouter/auto": {
+              params: {
+                provider: {
+                  order: ["openai"],
+                  allow_fallbacks: false,
+                },
+              },
+            },
+          },
+        },
+      },
+    } satisfies OpenClawConfig;
+
+    applyExtraParamsToAgent(agent, cfg, "openrouter", "auto");
+
+    const model = {
+      api: "openai-completions",
+      provider: "openrouter",
+      id: "auto",
+    } as Model<"openai-completions">;
+    const context: Context = { messages: [] };
+    void agent.streamFn?.(model, context, {});
+
+    expect(routingSnapshots).toHaveLength(1);
+    expect(routingSnapshots[0]).toEqual({
+      order: ["openai"],
+      allow_fallbacks: false,
     });
   });
 

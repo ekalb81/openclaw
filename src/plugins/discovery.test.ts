@@ -4,7 +4,11 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { withEnvAsync } from "../test-utils/env.js";
-import { discoverOpenClawPlugins } from "./discovery.js";
+import {
+  clearPluginDiscoveryCache,
+  discoverOpenClawPlugins,
+  discoverOpenClawPluginsFromPaths,
+} from "./discovery.js";
 
 const tempDirs: string[] = [];
 
@@ -57,6 +61,7 @@ function expectEscapesPackageDiagnostic(diagnostics: Array<{ message: string }>)
 }
 
 afterEach(() => {
+  clearPluginDiscoveryCache();
   for (const dir of tempDirs.splice(0)) {
     try {
       fs.rmSync(dir, { recursive: true, force: true });
@@ -193,6 +198,35 @@ describe("discoverOpenClawPlugins", () => {
     const ids = candidates.map((c) => c.idHint);
     expect(ids).toContain("demo-plugin-dir");
   });
+
+  it("discovers only explicit config paths when using from-paths helper", async () => {
+    const stateDir = makeTempDir();
+    const globalExt = path.join(stateDir, "extensions");
+    fs.mkdirSync(globalExt, { recursive: true });
+    fs.writeFileSync(
+      path.join(globalExt, "global-only.ts"),
+      "export default function () {}",
+      "utf-8",
+    );
+
+    const explicitDir = path.join(stateDir, "explicit", "only");
+    fs.mkdirSync(explicitDir, { recursive: true });
+    writePluginPackageManifest({
+      packageDir: explicitDir,
+      packageName: "@openclaw/explicit-only",
+      extensions: ["./index.ts"],
+    });
+    fs.writeFileSync(path.join(explicitDir, "index.ts"), "export default function () {}", "utf-8");
+
+    const result = await withStateDir(stateDir, async () => {
+      return discoverOpenClawPluginsFromPaths({ paths: [explicitDir] });
+    });
+
+    const ids = result.candidates.map((candidate) => candidate.idHint);
+    expect(ids).toContain("explicit-only");
+    expect(ids).not.toContain("global-only");
+  });
+
   it("blocks extension entries that escape package directory", async () => {
     const stateDir = makeTempDir();
     const globalExt = path.join(stateDir, "extensions", "escape-pack");
@@ -350,4 +384,40 @@ describe("discoverOpenClawPlugins", () => {
       );
     },
   );
+
+  it("reuses discovery results from cache until cleared", async () => {
+    const stateDir = makeTempDir();
+    const globalExt = path.join(stateDir, "extensions");
+    fs.mkdirSync(globalExt, { recursive: true });
+    const pluginPath = path.join(globalExt, "cached.ts");
+    fs.writeFileSync(pluginPath, "export default function () {}", "utf-8");
+
+    const first = await withEnvAsync(
+      {
+        OPENCLAW_PLUGIN_DISCOVERY_CACHE_MS: "5000",
+      },
+      async () => withStateDir(stateDir, async () => discoverOpenClawPlugins({})),
+    );
+    expect(first.candidates.some((candidate) => candidate.idHint === "cached")).toBe(true);
+
+    fs.rmSync(pluginPath, { force: true });
+
+    const second = await withEnvAsync(
+      {
+        OPENCLAW_PLUGIN_DISCOVERY_CACHE_MS: "5000",
+      },
+      async () => withStateDir(stateDir, async () => discoverOpenClawPlugins({})),
+    );
+    expect(second.candidates.some((candidate) => candidate.idHint === "cached")).toBe(true);
+
+    clearPluginDiscoveryCache();
+
+    const third = await withEnvAsync(
+      {
+        OPENCLAW_PLUGIN_DISCOVERY_CACHE_MS: "5000",
+      },
+      async () => withStateDir(stateDir, async () => discoverOpenClawPlugins({})),
+    );
+    expect(third.candidates.some((candidate) => candidate.idHint === "cached")).toBe(false);
+  });
 });

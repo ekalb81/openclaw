@@ -17,6 +17,9 @@ This repo supports “remote over SSH” by keeping a single Gateway (the master
 - The Gateway WebSocket binds to **loopback** on your configured port (defaults to 18789).
 - For remote use, you forward that loopback port over SSH (or use a tailnet/VPN and tunnel less).
 
+Before exposing any remote surface, review the operator matrix:
+[Deployment hardening](/gateway/deployment-hardening).
+
 ## Common VPN/tailnet setups (where the agent lives)
 
 Think of the **Gateway host** as “where the agent lives.” It owns sessions, auth profiles, channels, and state.

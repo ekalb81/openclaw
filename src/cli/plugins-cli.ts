@@ -11,6 +11,7 @@ import { enablePluginInConfig } from "../plugins/enable.js";
 import { installPluginFromNpmSpec, installPluginFromPath } from "../plugins/install.js";
 import { recordPluginInstall } from "../plugins/installs.js";
 import { clearPluginManifestRegistryCache } from "../plugins/manifest-registry.js";
+import { lintPluginPolicy, resolvePluginPolicyLintTrustMode } from "../plugins/policy-lint.js";
 import type { PluginRecord } from "../plugins/registry.js";
 import { applyExclusiveSlotSelection } from "../plugins/slots.js";
 import { resolvePluginSourceRoots, formatPluginSourceForTable } from "../plugins/source-display.js";
@@ -51,6 +52,14 @@ export type PluginUninstallOptions = {
   keepConfig?: boolean;
   force?: boolean;
   dryRun?: boolean;
+};
+
+export type PluginPolicyLintCliOptions = {
+  json?: boolean;
+  workspace?: string;
+  path?: string[];
+  trustMode?: string;
+  failOnWarn?: boolean;
 };
 
 function resolveFileNpmSpecToLocalPath(
@@ -151,6 +160,10 @@ function logSlotWarnings(warnings: string[]) {
   for (const warning of warnings) {
     defaultRuntime.log(theme.warn(warning));
   }
+}
+
+function appendRepeatableOptionValue(value: string, previous: string[]): string[] {
+  return [...previous, value];
 }
 
 async function installBundledPluginSource(params: {
@@ -822,5 +835,58 @@ export function registerPluginsCli(program: Command) {
       lines.push("");
       lines.push(`${theme.muted("Docs:")} ${docs}`);
       defaultRuntime.log(lines.join("\n"));
+    });
+
+  plugins
+    .command("lint-policy")
+    .description("Lint plugin trust and packaging policy")
+    .option("--json", "Output machine-readable JSON", false)
+    .option("--workspace <path>", "Override workspace directory for plugin discovery")
+    .option(
+      "--path <path>",
+      "Lint explicit plugin path (repeatable; skips workspace/global discovery)",
+      appendRepeatableOptionValue,
+      [],
+    )
+    .option("--trust-mode <mode>", "Trust policy mode: enforce|warn", "enforce")
+    .option("--fail-on-warn", "Exit with code 1 when warnings are present", false)
+    .action((opts: PluginPolicyLintCliOptions) => {
+      const cfg = loadConfig();
+      const trustModeInput = opts.trustMode?.trim().toLowerCase();
+      if (trustModeInput !== "enforce" && trustModeInput !== "warn") {
+        defaultRuntime.error(`Invalid trust mode "${opts.trustMode}". Use "enforce" or "warn".`);
+        process.exit(1);
+      }
+      const trustMode = resolvePluginPolicyLintTrustMode(trustModeInput);
+      const result = lintPluginPolicy({
+        config: cfg,
+        workspaceDir: opts.workspace ? resolveUserPath(opts.workspace) : undefined,
+        explicitPaths: (opts.path ?? []).map((entry) => resolveUserPath(entry)),
+        trustMode,
+        failOnWarn: opts.failOnWarn === true,
+      });
+
+      if (opts.json) {
+        defaultRuntime.log(JSON.stringify(result, null, 2));
+      } else {
+        defaultRuntime.log(
+          `Plugin policy lint: scanned ${result.plugins.length} plugin(s), ` +
+            `${result.counts.error} error(s), ${result.counts.warn} warning(s).`,
+        );
+        if (result.issues.length > 0) {
+          const lines = result.issues.map((issue) => {
+            const label = issue.level === "error" ? theme.error("error") : theme.warn("warn");
+            const target = issue.pluginId ?? issue.source ?? "global";
+            return `- [${label}] ${issue.code} (${target}): ${issue.message}`;
+          });
+          defaultRuntime.log(lines.join("\n"));
+        } else {
+          defaultRuntime.log(theme.success("No plugin policy issues found."));
+        }
+      }
+
+      if (!result.ok) {
+        process.exit(1);
+      }
     });
 }

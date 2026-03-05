@@ -273,6 +273,12 @@ img.chat-avatar {
   animation: pulsing-border 1.5s ease-out infinite;
 }
 
+.chat-bubble.streaming.fade-in {
+  animation:
+    pulsing-border 1.5s ease-out infinite,
+    fade-in 200ms ease-out;
+}
+
 @keyframes pulsing-border {
   0%,
   100% {
@@ -286,6 +292,12 @@ img.chat-avatar {
 /* Fade-in animation for new messages */
 .chat-bubble.fade-in {
   animation: fade-in 200ms ease-out;
+}
+
+.chat-empty-assistant {
+  color: var(--muted);
+  font-size: 12px;
+  font-style: italic;
 }
 
 @keyframes fade-in {

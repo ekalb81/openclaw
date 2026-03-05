@@ -1,10 +1,20 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { GATEWAY_EVENT_UPDATE_AVAILABLE } from "../../../src/gateway/events.js";
-import { connectGateway } from "./app-gateway.ts";
+import { connectGateway, resolveControlUiClientVersion } from "./app-gateway.ts";
+
+type GatewayHost = Parameters<typeof connectGateway>[0];
+type TestGatewayHost = GatewayHost & {
+  chatStream: string | null;
+  chatStreamStartedAt: number | null;
+  chatMessages: unknown[];
+  chatRunWatchdogLastActivityAtMs: number | null;
+};
 
 type GatewayClientMock = {
   start: ReturnType<typeof vi.fn>;
   stop: ReturnType<typeof vi.fn>;
+  request: ReturnType<typeof vi.fn>;
+  options: { clientVersion?: string };
   emitClose: (info: {
     code: number;
     reason?: string;
@@ -31,9 +41,12 @@ vi.mock("./gateway.ts", () => {
   class GatewayBrowserClient {
     readonly start = vi.fn();
     readonly stop = vi.fn();
+    readonly request = vi.fn().mockResolvedValue({ messages: [] });
 
     constructor(
       private opts: {
+        onHello?: (hello: unknown) => void;
+        clientVersion?: string;
         onClose?: (info: {
           code: number;
           reason: string;
@@ -46,6 +59,8 @@ vi.mock("./gateway.ts", () => {
       gatewayClientInstances.push({
         start: this.start,
         stop: this.stop,
+        request: this.request,
+        options: { clientVersion: this.opts.clientVersion },
         emitClose: (info) => {
           this.opts.onClose?.({
             code: info.code,
@@ -66,7 +81,7 @@ vi.mock("./gateway.ts", () => {
   return { GatewayBrowserClient, resolveGatewayErrorDetailCode };
 });
 
-function createHost() {
+function createHost(): TestGatewayHost {
   return {
     settings: {
       gatewayUrl: "ws://127.0.0.1:18789",
@@ -96,22 +111,47 @@ function createHost() {
     agentsLoading: false,
     agentsList: null,
     agentsError: null,
+    toolsCatalogLoading: false,
+    toolsCatalogError: null,
+    toolsCatalogResult: null,
     debugHealth: null,
     assistantName: "OpenClaw",
     assistantAvatar: null,
     assistantAgentId: null,
+    serverVersion: null,
     sessionKey: "main",
+    chatLoading: false,
+    chatMessages: [],
+    chatThinkingLevel: null,
+    chatSending: false,
+    chatMessage: "",
+    chatAttachments: [],
+    chatStream: null,
+    chatStreamStartedAt: null,
+    toolStreamById: new Map(),
+    toolStreamOrder: [],
+    chatToolMessages: [],
+    toolStreamSyncTimer: null,
+    compactionStatus: null,
+    compactionClearTimer: null,
+    fallbackStatus: null,
+    fallbackClearTimer: null,
     chatRunId: null,
+    chatRunWatchdogLastActivityAtMs: null,
     refreshSessionsAfterChat: new Set<string>(),
     execApprovalQueue: [],
     execApprovalError: null,
     updateAvailable: null,
-  } as unknown as Parameters<typeof connectGateway>[0];
+  } as TestGatewayHost;
 }
 
 describe("connectGateway", () => {
   beforeEach(() => {
     gatewayClientInstances.length = 0;
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
   });
 
   it("ignores stale client onGap callbacks after reconnect", () => {
@@ -225,5 +265,168 @@ describe("connectGateway", () => {
 
     expect(host.lastError).toContain("gateway token mismatch");
     expect(host.lastErrorCode).toBe("AUTH_TOKEN_MISMATCH");
+  });
+
+  it("accepts aliased session keys for chat events", () => {
+    const host = createHost();
+    host.chatRunId = "run-1";
+    host.chatStream = "Working...";
+    host.chatStreamStartedAt = 123;
+
+    connectGateway(host);
+    const client = gatewayClientInstances[0];
+    expect(client).toBeDefined();
+    host.hello = {
+      type: "hello-ok",
+      protocol: 3,
+      snapshot: {
+        sessionDefaults: {
+          mainKey: "main",
+          mainSessionKey: "agent:main:main",
+          defaultAgentId: "main",
+        },
+      },
+    } as unknown as typeof host.hello;
+
+    client.emitEvent({
+      event: "chat",
+      payload: {
+        runId: "run-1",
+        sessionKey: "agent:main:main",
+        state: "final",
+        message: {
+          role: "assistant",
+          content: [{ type: "text", text: "done" }],
+        },
+      },
+    });
+
+    expect(host.chatRunId).toBeNull();
+    expect(host.chatStream).toBeNull();
+    expect(host.chatStreamStartedAt).toBeNull();
+    expect(host.chatMessages).toHaveLength(1);
+    expect(host.settings.lastActiveSessionKey).toBe("main");
+  });
+
+  it("auto-recovers after seq gaps using configured delay", async () => {
+    vi.useFakeTimers();
+    const host = createHost();
+    (host.settings as unknown as Record<string, unknown>).chatAutoRecoverOnGap = true;
+    (host.settings as unknown as Record<string, unknown>).chatAutoRecoverGapDelayMs = 1_200;
+    host.connected = true;
+    host.chatRunId = "run-1";
+    host.chatStream = "Working...";
+    host.chatStreamStartedAt = 5;
+
+    connectGateway(host);
+    const client = gatewayClientInstances[0];
+    expect(client).toBeDefined();
+    host.connected = true;
+
+    client.emitGap(11, 15);
+    expect(host.lastError).toContain("event gap detected");
+    expect(host.chatRunId).toBe("run-1");
+
+    await vi.advanceTimersByTimeAsync(1_199);
+    expect(host.chatRunId).toBe("run-1");
+
+    await vi.advanceTimersByTimeAsync(1);
+    await Promise.resolve();
+
+    expect(host.chatRunId).toBeNull();
+    expect(host.chatStream).toBeNull();
+    expect(host.chatStreamStartedAt).toBeNull();
+    expect(client.request).toHaveBeenCalledWith("chat.history", {
+      sessionKey: "main",
+      limit: 200,
+    });
+  });
+
+  it("does not auto-recover after seq gaps when disabled", async () => {
+    vi.useFakeTimers();
+    const host = createHost();
+    (host.settings as unknown as Record<string, unknown>).chatAutoRecoverOnGap = false;
+    host.connected = true;
+    host.chatRunId = "run-1";
+    host.chatStream = "Working...";
+    host.chatStreamStartedAt = 5;
+
+    connectGateway(host);
+    const client = gatewayClientInstances[0];
+    expect(client).toBeDefined();
+    host.connected = true;
+
+    client.emitGap(3, 9);
+    await vi.advanceTimersByTimeAsync(10_000);
+    await Promise.resolve();
+
+    expect(host.chatRunId).toBe("run-1");
+    expect(host.chatStream).toBe("Working...");
+    expect(client.request).not.toHaveBeenCalled();
+  });
+
+  it("touches watchdog activity timestamp on agent events during active run", () => {
+    const host = createHost();
+    host.chatRunId = "run-1";
+    host.chatRunWatchdogLastActivityAtMs = 1;
+    host.onboarding = true;
+
+    connectGateway(host);
+    const client = gatewayClientInstances[0];
+    expect(client).toBeDefined();
+
+    const nowSpy = vi.spyOn(Date, "now").mockReturnValue(12_345);
+    client.emitEvent({
+      event: "agent",
+      payload: {
+        runId: "run-1",
+        stream: "tool",
+        data: { type: "tool.start" },
+      },
+    });
+    expect(host.chatRunWatchdogLastActivityAtMs).toBe(12_345);
+    nowSpy.mockRestore();
+  });
+});
+
+describe("resolveControlUiClientVersion", () => {
+  it("returns serverVersion for same-origin websocket targets", () => {
+    expect(
+      resolveControlUiClientVersion({
+        gatewayUrl: "ws://localhost:8787",
+        serverVersion: "2026.3.3",
+        pageUrl: "http://localhost:8787/openclaw/",
+      }),
+    ).toBe("2026.3.3");
+  });
+
+  it("returns serverVersion for same-origin relative targets", () => {
+    expect(
+      resolveControlUiClientVersion({
+        gatewayUrl: "/ws",
+        serverVersion: "2026.3.3",
+        pageUrl: "https://control.example.com/openclaw/",
+      }),
+    ).toBe("2026.3.3");
+  });
+
+  it("returns serverVersion for same-origin http targets", () => {
+    expect(
+      resolveControlUiClientVersion({
+        gatewayUrl: "https://control.example.com/ws",
+        serverVersion: "2026.3.3",
+        pageUrl: "https://control.example.com/openclaw/",
+      }),
+    ).toBe("2026.3.3");
+  });
+
+  it("omits serverVersion for cross-origin targets", () => {
+    expect(
+      resolveControlUiClientVersion({
+        gatewayUrl: "wss://gateway.example.com",
+        serverVersion: "2026.3.3",
+        pageUrl: "https://control.example.com/openclaw/",
+      }),
+    ).toBeUndefined();
   });
 });

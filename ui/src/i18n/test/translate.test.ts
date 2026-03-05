@@ -1,8 +1,9 @@
-import { describe, it, expect, beforeEach, vi } from "vitest";
-import { i18n, t } from "../lib/translate.ts";
+import { beforeEach, describe, expect, it } from "vitest";
+import { createI18nManager, i18n, t } from "../lib/translate.ts";
 
 describe("i18n", () => {
   beforeEach(async () => {
+    await i18n.waitForStartupLocale();
     localStorage.clear();
     // Reset to English
     await i18n.setLocale("en");
@@ -43,14 +44,10 @@ describe("i18n", () => {
 
   it("loads saved non-English locale on startup", async () => {
     localStorage.setItem("openclaw.i18n.locale", "zh-CN");
-    vi.resetModules();
-    const fresh = await import("../lib/translate.ts");
+    const fresh = createI18nManager();
+    await fresh.waitForStartupLocale();
 
-    for (let index = 0; index < 5 && fresh.i18n.getLocale() !== "zh-CN"; index += 1) {
-      await Promise.resolve();
-    }
-
-    expect(fresh.i18n.getLocale()).toBe("zh-CN");
+    expect(fresh.getLocale()).toBe("zh-CN");
     expect(fresh.t("common.health")).toBe("健康状况");
   });
 });

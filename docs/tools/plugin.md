@@ -106,6 +106,56 @@ Notes:
 - Uses core media-understanding audio configuration (`tools.media.audio`) and provider fallback order.
 - Returns `{ text: undefined }` when no transcription output is produced (for example skipped/unsupported input).
 
+## Plugin SDK import paths
+
+Use SDK subpaths instead of the monolithic `openclaw/plugin-sdk` import when
+authoring plugins:
+
+- `openclaw/plugin-sdk/core` for generic plugin APIs, provider auth types, and shared helpers.
+- `openclaw/plugin-sdk/compat` for bundled/internal plugin code that needs broader shared runtime helpers than `core`.
+- `openclaw/plugin-sdk/telegram` for Telegram channel plugins.
+- `openclaw/plugin-sdk/discord` for Discord channel plugins.
+- `openclaw/plugin-sdk/slack` for Slack channel plugins.
+- `openclaw/plugin-sdk/signal` for Signal channel plugins.
+- `openclaw/plugin-sdk/imessage` for iMessage channel plugins.
+- `openclaw/plugin-sdk/whatsapp` for WhatsApp channel plugins.
+- `openclaw/plugin-sdk/line` for LINE channel plugins.
+- `openclaw/plugin-sdk/msteams` for the bundled Microsoft Teams plugin surface.
+- Bundled extension-specific subpaths are also available:
+  `openclaw/plugin-sdk/acpx`, `openclaw/plugin-sdk/bluebubbles`,
+  `openclaw/plugin-sdk/copilot-proxy`, `openclaw/plugin-sdk/device-pair`,
+  `openclaw/plugin-sdk/diagnostics-otel`, `openclaw/plugin-sdk/diffs`,
+  `openclaw/plugin-sdk/feishu`,
+  `openclaw/plugin-sdk/google-gemini-cli-auth`, `openclaw/plugin-sdk/googlechat`,
+  `openclaw/plugin-sdk/irc`, `openclaw/plugin-sdk/llm-task`,
+  `openclaw/plugin-sdk/lobster`, `openclaw/plugin-sdk/matrix`,
+  `openclaw/plugin-sdk/mattermost`, `openclaw/plugin-sdk/memory-core`,
+  `openclaw/plugin-sdk/memory-lancedb`,
+  `openclaw/plugin-sdk/minimax-portal-auth`,
+  `openclaw/plugin-sdk/nextcloud-talk`, `openclaw/plugin-sdk/nostr`,
+  `openclaw/plugin-sdk/open-prose`, `openclaw/plugin-sdk/phone-control`,
+  `openclaw/plugin-sdk/qwen-portal-auth`, `openclaw/plugin-sdk/synology-chat`,
+  `openclaw/plugin-sdk/talk-voice`, `openclaw/plugin-sdk/test-utils`,
+  `openclaw/plugin-sdk/thread-ownership`, `openclaw/plugin-sdk/tlon`,
+  `openclaw/plugin-sdk/twitch`, `openclaw/plugin-sdk/voice-call`,
+  `openclaw/plugin-sdk/zalo`, and `openclaw/plugin-sdk/zalouser`.
+
+Compatibility note:
+
+- `openclaw/plugin-sdk` remains supported for existing external plugins.
+- New and migrated bundled plugins should use channel or extension-specific
+  subpaths; use `core` for generic surfaces and `compat` only when broader
+  shared helpers are required.
+
+Performance note:
+
+- Plugin discovery and manifest metadata use short in-process caches to reduce
+  bursty startup/reload work.
+- Set `OPENCLAW_DISABLE_PLUGIN_DISCOVERY_CACHE=1` or
+  `OPENCLAW_DISABLE_PLUGIN_MANIFEST_CACHE=1` to disable these caches.
+- Tune cache windows with `OPENCLAW_PLUGIN_DISCOVERY_CACHE_MS` and
+  `OPENCLAW_PLUGIN_MANIFEST_CACHE_MS`.
+
 ## Discovery & precedence
 
 OpenClaw scans, in order:
@@ -124,22 +174,32 @@ OpenClaw scans, in order:
 - `~/.openclaw/extensions/*.ts`
 - `~/.openclaw/extensions/*/index.ts`
 
-4. Bundled extensions (shipped with OpenClaw, **disabled by default**)
+4. Bundled extensions (shipped with OpenClaw, mostly disabled by default)
 
 - `<openclaw>/extensions/*`
 
-Bundled plugins must be enabled explicitly via `plugins.entries.<id>.enabled`
-or `openclaw plugins enable <id>`. Installed plugins are enabled by default,
-but can be disabled the same way.
+Most bundled plugins must be enabled explicitly via
+`plugins.entries.<id>.enabled` or `openclaw plugins enable <id>`.
+
+Default-on bundled plugin exceptions:
+
+- `device-pair`
+- `phone-control`
+- `talk-voice`
+- active memory slot plugin (default slot: `memory-core`)
+
+Installed plugins are enabled by default, but can be disabled the same way.
 
 Hardening notes:
 
-- If `plugins.allow` is empty and non-bundled plugins are discoverable, OpenClaw logs a startup warning with plugin ids and sources.
+- Auto-discovered workspace/global plugins require explicit `plugins.allow` entries before they load.
+- Temporary migration override: set `OPENCLAW_PLUGIN_TRUST_ALLOWLIST_MODE=warn` to keep warning-only behavior while building an allowlist.
 - Candidate paths are safety-checked before discovery admission. OpenClaw blocks candidates when:
   - extension entry resolves outside plugin root (including symlink/path traversal escapes),
   - plugin root/source path is world-writable,
   - path ownership is suspicious for non-bundled plugins (POSIX owner is neither current uid nor root).
 - Loaded non-bundled plugins without install/load-path provenance emit a warning so you can pin trust (`plugins.allow`) or install tracking (`plugins.installs`).
+- Run `openclaw plugins lint-policy` before release/deploy to catch trust and packaging policy issues early.
 
 Each plugin must include a `openclaw.plugin.json` file in its root. If a path
 points at a file, the plugin root is the file's directory and must contain the
@@ -330,10 +390,14 @@ openclaw plugins update --all
 openclaw plugins enable <id>
 openclaw plugins disable <id>
 openclaw plugins doctor
+openclaw plugins lint-policy
 ```
 
 `plugins update` only works for npm installs tracked under `plugins.installs`.
 If stored integrity metadata changes between updates, OpenClaw warns and asks for confirmation (use global `--yes` to bypass prompts).
+
+`plugins lint-policy` runs checks for manifest/discovery diagnostics, trust allowlist coverage,
+and dependency policy issues like runtime `workspace:*` specs.
 
 Plugins may also register their own top‑level commands (example: `openclaw voicecall`).
 

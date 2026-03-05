@@ -123,6 +123,13 @@ jobs:
         include:
           - runtime: node
             task: test
+            shard_index: 1
+            shard_count: 2
+            command: pnpm canvas:a2ui:bundle && pnpm test
+          - runtime: node
+            task: test
+            shard_index: 2
+            shard_count: 2
             command: pnpm canvas:a2ui:bundle && pnpm test
           - runtime: node
             task: protocol
@@ -130,34 +137,39 @@ jobs:
           - runtime: bun
             task: test
             command: pnpm canvas:a2ui:bundle && bunx vitest run --config vitest.unit.config.ts
+          - runtime: node
+            task: ui
+            command: pnpm --dir ui test
     steps:
-      - name: Skip bun lane on push
-        if: github.event_name == 'push' && matrix.runtime == 'bun'
-        run: echo "Skipping bun test lane on push events."
-
       - name: Checkout
-        if: github.event_name != 'push' || matrix.runtime != 'bun'
         uses: actions/checkout@v4
         with:
           submodules: false
 
       - name: Setup Node environment
-        if: matrix.runtime != 'bun' || github.event_name != 'push'
         uses: ./.github/actions/setup-node-env
         with:
           install-bun: "${{ matrix.runtime == 'bun' }}"
           use-sticky-disk: "true"
 
       - name: Configure Node test resources
-        if: (github.event_name != 'push' || matrix.runtime != 'bun') && matrix.task == 'test' && matrix.runtime == 'node'
+        if: matrix.task == 'test' && matrix.runtime == 'node'
         run: |
           # `pnpm test` runs `scripts/test-parallel.mjs`, which spawns multiple Node processes.
           # Default heap limits have been too low on Linux CI (V8 OOM near 4GB).
           echo "OPENCLAW_TEST_WORKERS=2" >> "$GITHUB_ENV"
           echo "OPENCLAW_TEST_MAX_OLD_SPACE_SIZE_MB=6144" >> "$GITHUB_ENV"
+          # CI should validate runtime-path suites in addition to unit tests.
+          echo "OPENCLAW_TEST_INCLUDE_GATEWAY=1" >> "$GITHUB_ENV"
+          echo "OPENCLAW_TEST_INCLUDE_EXTENSIONS=1" >> "$GITHUB_ENV"
+          echo "OPENCLAW_TEST_SHARDS=${{ matrix.shard_count }}" >> "$GITHUB_ENV"
+          echo "OPENCLAW_TEST_SHARD_INDEX=${{ matrix.shard_index }}" >> "$GITHUB_ENV"
+
+      - name: Install Playwright browser for UI tests
+        if: matrix.task == 'ui'
+        run: pnpm --dir ui exec playwright install chromium
 
       - name: Run ${{ matrix.task }} (${{ matrix.runtime }})
-        if: matrix.runtime != 'bun' || github.event_name != 'push'
         run: ${{ matrix.command }}
 
   # Types, lint, and format check.
@@ -187,14 +199,34 @@ jobs:
       - name: Enforce safe external URL opening policy
         run: pnpm lint:ui:no-raw-window-open
 
+  coverage:
+    name: "coverage-gate"
+    needs: [docs-scope, changed-scope]
+    if: needs.docs-scope.outputs.docs_only != 'true' && github.event_name == 'push'
+    runs-on: blacksmith-16vcpu-ubuntu-2404
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: false
+
+      - name: Setup Node environment
+        uses: ./.github/actions/setup-node-env
+        with:
+          install-bun: "false"
+          use-sticky-disk: "true"
+
+      - name: Run coverage gate
+        env:
+          NODE_OPTIONS: --max-old-space-size=6144
+        run: pnpm canvas:a2ui:bundle && pnpm exec vitest run --config vitest.unit.config.ts --coverage --maxWorkers=2
+
   # Report-only dead-code scans. Runs after scope detection and stores machine-readable
   # results as artifacts for later triage before we enable hard gates.
-  # Temporarily disabled in CI while we process initial findings.
   deadcode:
     name: dead-code report
     needs: [docs-scope, changed-scope]
-    # if: needs.docs-scope.outputs.docs_only != 'true' && (github.event_name == 'push' || needs.changed-scope.outputs.run_node == 'true')
-    if: false
+    if: needs.docs-scope.outputs.docs_only != 'true' && (github.event_name == 'push' || needs.changed-scope.outputs.run_node == 'true')
     runs-on: blacksmith-16vcpu-ubuntu-2404
     strategy:
       fail-fast: false
@@ -528,7 +560,8 @@ jobs:
           exit 1
 
   ios:
-    if: false # ignore iOS in CI for now
+    needs: [docs-scope, changed-scope]
+    if: needs.docs-scope.outputs.docs_only != 'true' && (github.event_name == 'push' || needs.changed-scope.outputs.run_macos == 'true')
     runs-on: macos-latest
     steps:
       - name: Checkout
@@ -561,7 +594,7 @@ jobs:
       - name: iOS tests
         run: |
           set -euo pipefail
-          RESULT_BUNDLE_PATH="$RUNNER_TEMP/Clawdis-iOS.xcresult"
+          RESULT_BUNDLE_PATH="$RUNNER_TEMP/OpenClaw-iOS.xcresult"
           DEST_ID="$(
             python3 - <<'PY'
           import json
@@ -640,29 +673,31 @@ jobs:
           )"
           echo "Using iOS Simulator id: $DEST_ID"
           xcodebuild test \
-            -project apps/ios/Clawdis.xcodeproj \
-            -scheme Clawdis \
+            -project apps/ios/OpenClaw.xcodeproj \
+            -scheme OpenClaw \
             -destination "platform=iOS Simulator,id=$DEST_ID" \
             -resultBundlePath "$RESULT_BUNDLE_PATH" \
-            -enableCodeCoverage YES
+            -enableCodeCoverage YES \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO
 
       - name: iOS coverage summary
         run: |
           set -euo pipefail
-          RESULT_BUNDLE_PATH="$RUNNER_TEMP/Clawdis-iOS.xcresult"
+          RESULT_BUNDLE_PATH="$RUNNER_TEMP/OpenClaw-iOS.xcresult"
           xcrun xccov view --report --only-targets "$RESULT_BUNDLE_PATH"
 
       - name: iOS coverage gate (43%)
         run: |
           set -euo pipefail
-          RESULT_BUNDLE_PATH="$RUNNER_TEMP/Clawdis-iOS.xcresult"
+          RESULT_BUNDLE_PATH="$RUNNER_TEMP/OpenClaw-iOS.xcresult"
           RESULT_BUNDLE_PATH="$RESULT_BUNDLE_PATH" python3 - <<'PY'
           import json
           import os
           import subprocess
           import sys
 
-          target_name = "Clawdis.app"
+          target_name = "OpenClaw.app"
           minimum = 0.43
 
           report = json.loads(

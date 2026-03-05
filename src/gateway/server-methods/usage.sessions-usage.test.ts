@@ -80,7 +80,7 @@ import {
   loadSessionUsageTimeSeries,
 } from "../../infra/session-cost-usage.js";
 import { loadCombinedSessionStoreForGateway } from "../session-utils.js";
-import { usageHandlers } from "./usage.js";
+import { __test, usageHandlers } from "./usage.js";
 
 async function runSessionsUsage(params: Record<string, unknown>) {
   const respond = vi.fn();
@@ -241,5 +241,74 @@ describe("sessions.usage", () => {
         message: expect.stringContaining("Invalid session key"),
       }),
     );
+  });
+
+  it("parses prompt footprint custom entries and aggregates profile stats", async () => {
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "openclaw-usage-footprint-"));
+    const transcript = path.join(tempDir, "session.jsonl");
+    try {
+      fs.writeFileSync(
+        transcript,
+        [
+          JSON.stringify({
+            type: "custom",
+            customType: "openclaw:prompt-footprint",
+            data: {
+              timestamp: Date.parse("2026-02-01T10:00:00.000Z"),
+              profile: "balanced",
+              blocked: false,
+              changed: true,
+              final: { estimatedTokens: 1200 },
+            },
+          }),
+          JSON.stringify({
+            type: "custom",
+            customType: "openclaw:prompt-footprint",
+            data: {
+              timestamp: Date.parse("2026-02-01T11:00:00.000Z"),
+              profile: "throughput",
+              blocked: true,
+              changed: false,
+              final: { estimatedTokens: 900 },
+            },
+          }),
+        ].join("\n"),
+        "utf-8",
+      );
+
+      const summary = await __test.loadSessionPromptFootprintSummary({
+        sessionFile: transcript,
+        startMs: Date.parse("2026-02-01T00:00:00.000Z"),
+        endMs: Date.parse("2026-02-02T00:00:00.000Z"),
+      });
+
+      expect(summary).toEqual({
+        turns: 2,
+        blockedTurns: 1,
+        changedTurns: 1,
+        avgEstimatedTokens: 1050,
+        maxEstimatedTokens: 1200,
+        profiles: [
+          {
+            profile: "balanced",
+            turns: 1,
+            blockedTurns: 0,
+            changedTurns: 1,
+            avgEstimatedTokens: 1200,
+            maxEstimatedTokens: 1200,
+          },
+          {
+            profile: "throughput",
+            turns: 1,
+            blockedTurns: 1,
+            changedTurns: 0,
+            avgEstimatedTokens: 900,
+            maxEstimatedTokens: 900,
+          },
+        ],
+      });
+    } finally {
+      fs.rmSync(tempDir, { recursive: true, force: true });
+    }
   });
 });

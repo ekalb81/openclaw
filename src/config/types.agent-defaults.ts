@@ -8,12 +8,43 @@ import type {
 } from "./types.base.js";
 import type { MemorySearchConfig } from "./types.tools.js";
 
+export type AgentPromptBudgetAction = "warn" | "trim" | "summarize" | "block";
+
+export type AgentPromptBudgetProfileConfig = {
+  /** Approximate char-per-token ratio used for prompt size estimation. */
+  charsPerToken?: number;
+  /** Estimated token cost per prompt image. */
+  imageTokens?: number;
+  /** Soft threshold as a share of context window tokens. */
+  softLimitRatio?: number;
+  /** Hard threshold as a share of context window tokens. */
+  hardLimitRatio?: number;
+  /** Action when soft threshold is exceeded. */
+  softAction?: Exclude<AgentPromptBudgetAction, "block">;
+  /** Action when hard threshold is exceeded. */
+  hardAction?: Exclude<AgentPromptBudgetAction, "warn">;
+};
+
+export type AgentPromptBudgetConfig = {
+  /** Enable preflight prompt-budget enforcement (default: true). */
+  enabled?: boolean;
+  /**
+   * Tuning profile name.
+   * Built-ins: "conservative", "balanced", "throughput" (default: "balanced").
+   */
+  profile?: string;
+  /** Optional custom prompt-budget profiles keyed by name. */
+  profiles?: Record<string, AgentPromptBudgetProfileConfig>;
+} & AgentPromptBudgetProfileConfig;
+
 export type AgentModelEntryConfig = {
   alias?: string;
   /** Provider-specific API parameters (e.g., GLM-4.7 thinking mode). */
   params?: Record<string, unknown>;
   /** Enable streaming for this model (default: true, false for Ollama to avoid SDK issue #1205). */
   streaming?: boolean;
+  /** Optional preflight prompt-budget overrides for this specific model key. */
+  promptBudget?: AgentPromptBudgetConfig;
 };
 
 export type AgentModelListConfig = {
@@ -21,8 +52,37 @@ export type AgentModelListConfig = {
   fallbacks?: string[];
 };
 
+export type AgentModelRoutingTier = "economy" | "balanced" | "premium";
+
+export type AgentModelRoutingConfig = {
+  /**
+   * Enable cost-aware tier routing. Disabled by default for backward compatibility.
+   */
+  enabled?: boolean;
+  /**
+   * Starting tier for routing/escalation (default: "balanced").
+   */
+  tier?: AgentModelRoutingTier;
+  /**
+   * Tier escalation order from lowest to highest cost (default: economy -> balanced -> premium).
+   */
+  tierOrder?: AgentModelRoutingTier[];
+  /**
+   * Per-tier model chains. Each tier uses the same {primary,fallbacks} shape as agents.defaults.model.
+   */
+  tiers?: Partial<Record<AgentModelRoutingTier, AgentModelListConfig>>;
+  /**
+   * OpenRouter provider routing passthrough keyed by tier.
+   * Applied only when provider=openrouter and no per-model/provider override is set.
+   */
+  openRouter?: {
+    providerByTier?: Partial<Record<AgentModelRoutingTier, Record<string, unknown>>>;
+  };
+};
+
 export type AgentContextPruningConfig = {
   mode?: "off" | "cache-ttl";
+  policy?: "eligible" | "all";
   /** TTL to consider cache expired (duration string, default unit: minutes). */
   ttl?: string;
   keepLastAssistants?: number;
@@ -165,6 +225,10 @@ export type AgentDefaultsConfig = {
   envelopeElapsed?: "on" | "off";
   /** Optional context window cap (used for runtime estimates + status %). */
   contextTokens?: number;
+  /** Preflight prompt-budget guard defaults (supports per-model overrides). */
+  promptBudget?: AgentPromptBudgetConfig;
+  /** Optional cost-aware model routing tiers with tier escalation. */
+  modelRouting?: AgentModelRoutingConfig;
   /** Optional CLI backends for text-only fallback (claude-cli, etc.). */
   cliBackends?: Record<string, CliBackendConfig>;
   /** Opt-in: prune old tool results from the LLM context to reduce token usage. */
@@ -304,8 +368,21 @@ export type AgentCompactionConfig = {
   identifierPolicy?: AgentCompactionIdentifierPolicy;
   /** Custom identifier-preservation instructions used when identifierPolicy is "custom". */
   identifierInstructions?: string;
+  /** Tool-result context compaction for stale payloads before prompt dispatch. */
+  toolResultContext?: AgentToolResultContextConfig;
   /** Pre-compaction memory flush (agentic turn). Default: enabled. */
   memoryFlush?: AgentCompactionMemoryFlushConfig;
+};
+
+export type AgentToolResultContextConfig = {
+  /** Enable stale tool-result summarization in active prompt context (default: true). */
+  enabled?: boolean;
+  /** Summarize tool outputs larger than this many chars (default: 24000). */
+  maxToolPayloadChars?: number;
+  /** Summarize tool outputs once this many assistant turns have passed (default: 2). */
+  summaryAfterTurns?: number;
+  /** Keep only this many most-recent raw tool messages in prompt context (default: 8). */
+  maxToolMessagesInContext?: number;
 };
 
 export type AgentCompactionMemoryFlushConfig = {

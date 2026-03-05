@@ -13,9 +13,34 @@ LABEL org.opencontainers.image.base.name="docker.io/library/node:22-bookworm" \
   org.opencontainers.image.title="OpenClaw" \
   org.opencontainers.image.description="OpenClaw gateway and CLI runtime container image"
 
-# Install Bun (required for build scripts)
-RUN curl -fsSL https://bun.sh/install | bash
-ENV PATH="/root/.bun/bin:${PATH}"
+# Install Bun (required for build scripts) with release checksum verification.
+ARG OPENCLAW_BUN_VERSION="1.2.0"
+RUN set -eux; \
+    apt-get update; \
+    DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+      ca-certificates curl unzip; \
+    arch="$(dpkg --print-architecture)"; \
+    case "$arch" in \
+      amd64) bun_arch="x64" ;; \
+      arm64) bun_arch="aarch64" ;; \
+      *) echo "unsupported architecture for Bun: $arch" >&2; exit 1 ;; \
+    esac; \
+    bun_asset="bun-linux-${bun_arch}.zip"; \
+    bun_url="https://github.com/oven-sh/bun/releases/download/bun-v${OPENCLAW_BUN_VERSION}/${bun_asset}"; \
+    sums_url="https://github.com/oven-sh/bun/releases/download/bun-v${OPENCLAW_BUN_VERSION}/SHASUMS256.txt"; \
+    curl -fsSL "$bun_url" -o /tmp/bun.zip; \
+    curl -fsSL "$sums_url" -o /tmp/SHASUMS256.txt; \
+    expected="$(awk -v asset="$bun_asset" '$2 == asset { print $1; exit }' /tmp/SHASUMS256.txt)"; \
+    actual="$(sha256sum /tmp/bun.zip | awk '{print $1}')"; \
+    if [ -z "$expected" ] || [ "$actual" != "$expected" ]; then \
+      echo "ERROR: Bun archive checksum mismatch (expected ${expected:-<missing>}, got $actual)" >&2; \
+      exit 1; \
+    fi; \
+    unzip -q /tmp/bun.zip -d /tmp; \
+    install -m 0755 "/tmp/bun-linux-${bun_arch}/bun" /usr/local/bin/bun; \
+    rm -rf /tmp/bun.zip /tmp/SHASUMS256.txt "/tmp/bun-linux-${bun_arch}"; \
+    apt-get clean; \
+    rm -rf /var/lib/apt/lists/* /var/cache/apt/archives/*
 
 RUN corepack enable
 

@@ -1,4 +1,4 @@
----
+﻿---
 summary: "OpenClaw CLI reference for `openclaw` commands, subcommands, and options"
 read_when:
   - Adding or modifying CLI commands or options
@@ -87,7 +87,7 @@ OpenClaw uses a lobster palette for CLI output.
 - `error` (#E23D2D): errors, failures.
 - `muted` (#8B7F77): de-emphasis, metadata.
 
-Palette source of truth: `src/terminal/palette.ts` (aka “lobster seam”).
+Palette source of truth: `src/terminal/palette.ts` (aka â€œlobster seamâ€).
 
 ## Command tree
 
@@ -131,6 +131,7 @@ openclaw [--dev] [--profile <name>] <command>
     enable
     disable
     doctor
+    lint-policy
   memory
     status
     index
@@ -263,26 +264,27 @@ Note: plugins can add additional top-level commands (for example `openclaw voice
 
 ## Security
 
-- `openclaw security audit` — audit config + local state for common security foot-guns.
-- `openclaw security audit --deep` — best-effort live Gateway probe.
-- `openclaw security audit --fix` — tighten safe defaults and chmod state/config.
+- `openclaw security audit` â€” audit config + local state for common security foot-guns.
+- `openclaw security audit --deep` â€” best-effort live Gateway probe.
+- `openclaw security audit --fix` â€” tighten safe defaults and chmod state/config.
 
 ## Secrets
 
-- `openclaw secrets reload` — re-resolve refs and atomically swap the runtime snapshot.
-- `openclaw secrets audit` — scan for plaintext residues, unresolved refs, and precedence drift.
-- `openclaw secrets configure` — interactive helper for provider setup + SecretRef mapping + preflight/apply.
-- `openclaw secrets apply --from <plan.json>` — apply a previously generated plan (`--dry-run` supported).
+- `openclaw secrets reload` â€” re-resolve refs and atomically swap the runtime snapshot.
+- `openclaw secrets audit` â€” scan for plaintext residues, unresolved refs, and precedence drift.
+- `openclaw secrets configure` â€” interactive helper for provider setup + SecretRef mapping + preflight/apply.
+- `openclaw secrets apply --from <plan.json>` â€” apply a previously generated plan (`--dry-run` supported).
 
 ## Plugins
 
 Manage extensions and their config:
 
-- `openclaw plugins list` — discover plugins (use `--json` for machine output).
-- `openclaw plugins info <id>` — show details for a plugin.
-- `openclaw plugins install <path|.tgz|npm-spec>` — install a plugin (or add a plugin path to `plugins.load.paths`).
-- `openclaw plugins enable <id>` / `disable <id>` — toggle `plugins.entries.<id>.enabled`.
-- `openclaw plugins doctor` — report plugin load errors.
+- `openclaw plugins list` â€” discover plugins (use `--json` for machine output).
+- `openclaw plugins info <id>` â€” show details for a plugin.
+- `openclaw plugins install <path|.tgz|npm-spec>` â€” install a plugin (or add a plugin path to `plugins.load.paths`).
+- `openclaw plugins enable <id>` / `disable <id>` â€” toggle `plugins.entries.<id>.enabled`.
+- `openclaw plugins doctor` â€” report plugin load errors.
+- `openclaw plugins lint-policy` â€” run plugin trust and dependency policy checks.
 
 Most plugin changes require a gateway restart. See [/plugin](/tools/plugin).
 
@@ -290,9 +292,9 @@ Most plugin changes require a gateway restart. See [/plugin](/tools/plugin).
 
 Vector search over `MEMORY.md` + `memory/*.md`:
 
-- `openclaw memory status` — show index stats.
-- `openclaw memory index` — reindex memory files.
-- `openclaw memory search "<query>"` (or `--query "<query>"`) — semantic search over memory.
+- `openclaw memory status` â€” show index stats.
+- `openclaw memory index` â€” reindex memory files.
+- `openclaw memory search "<query>"` (or `--query "<query>"`) â€” semantic search over memory.
 
 ## Chat slash commands
 
@@ -772,7 +774,7 @@ Subcommands:
 
 Notes:
 
-- `gateway status` probes the Gateway RPC by default using the service’s resolved port/config (override with `--url/--token/--password`).
+- `gateway status` probes the Gateway RPC by default using the serviceâ€™s resolved port/config (override with `--url/--token/--password`).
 - `gateway status` supports `--no-probe`, `--deep`, and `--json` for scripting.
 - `gateway status` also surfaces legacy or extra gateway services when it can detect them (`--deep` adds system-level scans). Profile-named OpenClaw services are treated as first-class and aren't flagged as "extra".
 - `gateway status` prints which config path the CLI uses vs which config the service likely uses (service env), plus the resolved probe target URL.

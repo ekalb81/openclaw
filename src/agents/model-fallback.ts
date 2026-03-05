@@ -33,6 +33,24 @@ type ModelCandidate = {
   model: string;
 };
 
+type ModelRoutingTier = "economy" | "balanced" | "premium";
+
+type ModelRoutingConfig = {
+  enabled?: boolean;
+  tier?: ModelRoutingTier;
+  tierOrder?: ModelRoutingTier[];
+  tiers?: Partial<
+    Record<
+      ModelRoutingTier,
+      | string
+      | {
+          primary?: string;
+          fallbacks?: string[];
+        }
+    >
+  >;
+};
+
 type FallbackAttempt = {
   provider: string;
   model: string;
@@ -241,7 +259,7 @@ function resolveImageFallbackCandidates(params: {
   return candidates;
 }
 
-function resolveFallbackCandidates(params: {
+function resolveLegacyFallbackCandidates(params: {
   cfg: OpenClawConfig | undefined;
   provider: string;
   model: string;
@@ -316,6 +334,154 @@ function resolveFallbackCandidates(params: {
   }
 
   return candidates;
+}
+
+const MODEL_ROUTING_DEFAULT_TIER_ORDER: ModelRoutingTier[] = ["economy", "balanced", "premium"];
+
+function normalizeModelRoutingTier(value: unknown): ModelRoutingTier | null {
+  if (value === "economy" || value === "balanced" || value === "premium") {
+    return value;
+  }
+  return null;
+}
+
+function resolveModelRoutingTierOrder(raw?: unknown): ModelRoutingTier[] {
+  if (!Array.isArray(raw) || raw.length === 0) {
+    return MODEL_ROUTING_DEFAULT_TIER_ORDER;
+  }
+  const resolved: ModelRoutingTier[] = [];
+  for (const entry of raw) {
+    const tier = normalizeModelRoutingTier(entry);
+    if (!tier || resolved.includes(tier)) {
+      continue;
+    }
+    resolved.push(tier);
+  }
+  return resolved.length > 0 ? resolved : MODEL_ROUTING_DEFAULT_TIER_ORDER;
+}
+
+function resolveTierModelChain(
+  tierConfig:
+    | string
+    | {
+        primary?: string;
+        fallbacks?: string[];
+      }
+    | undefined,
+): string[] {
+  const primary = resolveAgentModelPrimaryValue(tierConfig);
+  const fallbacks = resolveAgentModelFallbackValues(tierConfig);
+  const models: string[] = [];
+  if (primary) {
+    models.push(primary);
+  }
+  for (const fallback of fallbacks) {
+    models.push(fallback);
+  }
+  return models;
+}
+
+function mergeCandidateLists(lists: ModelCandidate[][]): ModelCandidate[] {
+  const merged: ModelCandidate[] = [];
+  const seen = new Set<string>();
+  for (const list of lists) {
+    for (const candidate of list) {
+      const key = modelKey(candidate.provider, candidate.model);
+      if (seen.has(key)) {
+        continue;
+      }
+      seen.add(key);
+      merged.push(candidate);
+    }
+  }
+  return merged;
+}
+
+function resolveCostAwareFallbackCandidates(params: {
+  cfg: OpenClawConfig | undefined;
+  provider: string;
+  model: string;
+}): ModelCandidate[] | null {
+  const routing = params.cfg?.agents?.defaults?.modelRouting as ModelRoutingConfig | undefined;
+  if (!routing?.enabled) {
+    return null;
+  }
+
+  const tiers = routing.tiers;
+  if (!tiers || typeof tiers !== "object") {
+    return null;
+  }
+
+  const primary = params.cfg
+    ? resolveConfiguredModelRef({
+        cfg: params.cfg,
+        defaultProvider: DEFAULT_PROVIDER,
+        defaultModel: DEFAULT_MODEL,
+      })
+    : null;
+  const defaultProvider = primary?.provider ?? DEFAULT_PROVIDER;
+  const defaultModel = primary?.model ?? DEFAULT_MODEL;
+  const providerRaw = String(params.provider ?? "").trim() || defaultProvider;
+  const modelRaw = String(params.model ?? "").trim() || defaultModel;
+  const normalizedPrimary = normalizeModelRef(providerRaw, modelRaw);
+  const aliasIndex = buildModelAliasIndex({
+    cfg: params.cfg ?? {},
+    defaultProvider,
+  });
+  const allowlist = buildConfiguredAllowlistKeys({
+    cfg: params.cfg,
+    defaultProvider,
+  });
+  const { candidates, addExplicitCandidate } = createModelCandidateCollector(allowlist);
+
+  addExplicitCandidate(normalizedPrimary);
+
+  const orderedTiers = resolveModelRoutingTierOrder(routing.tierOrder);
+  const configuredTier = normalizeModelRoutingTier(routing.tier);
+  const selectedTier = configuredTier ?? "balanced";
+  const startIndex = Math.max(0, orderedTiers.indexOf(selectedTier));
+
+  for (let i = startIndex; i < orderedTiers.length; i += 1) {
+    const tierName = orderedTiers[i];
+    const refs = resolveTierModelChain(tiers[tierName]);
+    for (const raw of refs) {
+      const resolved = resolveModelRefFromString({
+        raw: String(raw ?? ""),
+        defaultProvider,
+        aliasIndex,
+      });
+      if (!resolved) {
+        continue;
+      }
+      addExplicitCandidate(resolved.ref);
+    }
+  }
+
+  return candidates.length > 0 ? candidates : null;
+}
+
+function resolveFallbackCandidates(params: {
+  cfg: OpenClawConfig | undefined;
+  provider: string;
+  model: string;
+  /** Optional explicit fallbacks list; when provided (even empty), replaces agents.defaults.model.fallbacks. */
+  fallbacksOverride?: string[];
+}): ModelCandidate[] {
+  const legacy = resolveLegacyFallbackCandidates(params);
+  if (params.fallbacksOverride !== undefined) {
+    return legacy;
+  }
+
+  const costAware = resolveCostAwareFallbackCandidates({
+    cfg: params.cfg,
+    provider: params.provider,
+    model: params.model,
+  });
+  if (!costAware) {
+    return legacy;
+  }
+
+  return mergeCandidateLists([costAware, legacy]);
 }
 
 const lastProbeAttempt = new Map<string, number>();

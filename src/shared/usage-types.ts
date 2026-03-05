@@ -10,6 +10,24 @@ import type {
   SessionToolUsage,
 } from "../infra/session-cost-usage.js";
 
+export type SessionPromptFootprintProfile = {
+  profile: string;
+  turns: number;
+  avgEstimatedTokens: number;
+  maxEstimatedTokens: number;
+  blockedTurns: number;
+  changedTurns: number;
+};
+
+export type SessionPromptFootprint = {
+  turns: number;
+  blockedTurns: number;
+  changedTurns: number;
+  avgEstimatedTokens: number;
+  maxEstimatedTokens: number;
+  profiles: SessionPromptFootprintProfile[];
+};
+
 export type SessionUsageEntry = {
   key: string;
   label?: string;
@@ -33,6 +51,7 @@ export type SessionUsageEntry = {
   modelProvider?: string;
   model?: string;
   usage: SessionCostSummary | null;
+  promptFootprint?: SessionPromptFootprint | null;
   contextWeight?: SessionSystemPromptReport | null;
 };
 
@@ -46,6 +65,7 @@ export type SessionsUsageAggregates = {
   latency?: SessionLatencyStats;
   dailyLatency?: SessionDailyLatency[];
   modelDaily?: SessionDailyModelUsage[];
+  promptFootprint?: SessionPromptFootprint | null;
   daily: Array<{
     date: string;
     tokens: number;

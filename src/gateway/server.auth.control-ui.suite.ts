@@ -223,6 +223,54 @@ export function registerControlUiAndPairingSuite(): void {
     });
   }
 
+  test("control-ui shared-auth matrix for localhost insecure mode", async () => {
+    const matrix: Array<{
+      name: string;
+      gatewayAuth: { mode: "token" | "password" | "none"; token?: string; password?: string };
+      connect: Parameters<typeof connectReq>[1];
+      expectOk: boolean;
+    }> = [
+      {
+        name: "token valid",
+        gatewayAuth: { mode: "token", token: "secret" },
+        connect: { token: "secret", device: null, client: { ...CONTROL_UI_CLIENT } },
+        expectOk: true,
+      },
+      {
+        name: "token invalid",
+        gatewayAuth: { mode: "token", token: "secret" },
+        connect: { token: "wrong", device: null, client: { ...CONTROL_UI_CLIENT } },
+        expectOk: false,
+      },
+      {
+        name: "password valid",
+        gatewayAuth: { mode: "password", password: "secret" },
+        connect: { password: "secret", device: null, client: { ...CONTROL_UI_CLIENT } },
+        expectOk: true,
+      },
+      {
+        name: "none mode",
+        gatewayAuth: { mode: "none" },
+        connect: {
+          device: null,
+          client: { ...CONTROL_UI_CLIENT },
+        },
+        expectOk: false,
+      },
+    ];
+
+    for (const scenario of matrix) {
+      testState.gatewayControlUi = { allowInsecureAuth: true };
+      testState.gatewayAuth = scenario.gatewayAuth;
+      await withGatewayServer(async ({ port }) => {
+        const ws = await openWs(port, { origin: originForPort(port) });
+        const res = await connectReq(ws, scenario.connect);
+        expect(res.ok, scenario.name).toBe(scenario.expectOk);
+        ws.close();
+      });
+    }
+  });
+
   test("allows localhost control ui without device identity when insecure auth is enabled", async () => {
     testState.gatewayControlUi = { allowInsecureAuth: true };
     const { server, ws, prevToken } = await startServerWithClient("secret", {

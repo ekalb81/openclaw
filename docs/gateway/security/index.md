@@ -23,6 +23,9 @@ OpenClaw security guidance assumes a **personal assistant** deployment: one trus
 
 This page explains hardening **within that model**. It does not claim hostile multi-tenant isolation on one shared gateway.
 
+Deployment planning shortcut: [Deployment hardening](/gateway/deployment-hardening)
+maps bind/auth/proxy/tailscale choices to safe defaults and anti-patterns.
+
 ## Quick check: `openclaw security audit`
 
 See also: [Formal Verification (Security Models)](/security/formal-verification/)
@@ -435,9 +438,11 @@ For any agent/surface that handles untrusted content, deny these by default:
 Plugins run **in-process** with the Gateway. Treat them as trusted code:
 
 - Only install plugins from sources you trust.
-- Prefer explicit `plugins.allow` allowlists.
+- Auto-discovered workspace/global plugins require explicit `plugins.allow` entries before they load.
 - Review plugin config before enabling.
 - Restart the Gateway after plugin changes.
+- Migration override: set `OPENCLAW_PLUGIN_TRUST_ALLOWLIST_MODE=warn` to temporarily keep warning-only behavior while you build a complete allowlist.
+- Run `openclaw plugins lint-policy` before release/deploy to validate trust and packaging policy checks.
 - If you install plugins from npm (`openclaw plugins install <npm-spec>`), treat it like running untrusted code:
   - The install path is `~/.openclaw/extensions/<pluginId>/` (or `$OPENCLAW_STATE_DIR/extensions/<pluginId>/`).
   - OpenClaw uses `npm pack` and then runs `npm install --omit=dev` in that directory (npm lifecycle scripts can execute code during install).

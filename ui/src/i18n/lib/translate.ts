@@ -9,6 +9,7 @@ import {
 import type { Locale, TranslationMap } from "./types.ts";
 
 type Subscriber = (locale: Locale) => void;
+const LOCALE_STORAGE_KEY = "openclaw.i18n.locale";
 
 export { SUPPORTED_LOCALES, isSupportedLocale };
 
@@ -16,20 +17,47 @@ class I18nManager {
   private locale: Locale = DEFAULT_LOCALE;
   private translations: Partial<Record<Locale, TranslationMap>> = { [DEFAULT_LOCALE]: en };
   private subscribers: Set<Subscriber> = new Set();
+  private startupLocaleLoad: Promise<void>;
 
   constructor() {
-    this.loadLocale();
+    this.startupLocaleLoad = this.loadLocale();
+  }
+
+  private getStoredLocale(): string | null {
+    if (typeof globalThis.localStorage === "undefined") {
+      return null;
+    }
+    try {
+      return localStorage.getItem(LOCALE_STORAGE_KEY);
+    } catch {
+      return null;
+    }
+  }
+
+  private persistLocale(locale: Locale) {
+    if (typeof globalThis.localStorage === "undefined") {
+      return;
+    }
+    try {
+      localStorage.setItem(LOCALE_STORAGE_KEY, locale);
+    } catch {
+      // Ignore storage failures so non-browser contexts keep working.
+    }
   }
 
   private resolveInitialLocale(): Locale {
-    const saved = localStorage.getItem("openclaw.i18n.locale");
+    const saved = this.getStoredLocale();
     if (isSupportedLocale(saved)) {
       return saved;
     }
-    return resolveNavigatorLocale(navigator.language);
+    const navigatorLanguage =
+      typeof navigator !== "undefined" && typeof navigator.language === "string"
+        ? navigator.language
+        : DEFAULT_LOCALE;
+    return resolveNavigatorLocale(navigatorLanguage);
   }
 
-  private loadLocale() {
+  private async loadLocale() {
     const initialLocale = this.resolveInitialLocale();
     if (initialLocale === DEFAULT_LOCALE) {
       this.locale = DEFAULT_LOCALE;
@@ -37,7 +65,11 @@ class I18nManager {
     }
     // Use the normal locale setter so startup locale loading follows the same
     // translation-loading + notify path as manual locale changes.
-    void this.setLocale(initialLocale);
+    await this.setLocale(initialLocale);
+  }
+
+  public async waitForStartupLocale() {
+    await this.startupLocaleLoad;
   }
 
   public getLocale(): Locale {
@@ -64,7 +96,7 @@ class I18nManager {
     }
 
     this.locale = locale;
-    localStorage.setItem("openclaw.i18n.locale", locale);
+    this.persistLocale(locale);
     this.notify();
   }
 
@@ -117,6 +149,10 @@ class I18nManager {
 
     return value;
   }
+}
+
+export function createI18nManager() {
+  return new I18nManager();
 }
 
 export const i18n = new I18nManager();

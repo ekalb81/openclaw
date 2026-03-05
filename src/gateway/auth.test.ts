@@ -86,6 +86,30 @@ describe("gateway auth", () => {
     expect(res.user).toBe(params.expected.user);
   }
 
+  function expectAuthResult(
+    actual: Awaited<ReturnType<typeof authorizeGatewayConnect>>,
+    expected:
+      | {
+          ok: false;
+          reason: string;
+        }
+      | {
+          ok: true;
+          method: NonNullable<Awaited<ReturnType<typeof authorizeGatewayConnect>>["method"]>;
+          user?: string;
+        },
+  ) {
+    expect(actual.ok).toBe(expected.ok);
+    if (!expected.ok) {
+      expect(actual.reason).toBe(expected.reason);
+      return;
+    }
+    expect(actual.method).toBe(expected.method);
+    if (expected.user) {
+      expect(actual.user).toBe(expected.user);
+    }
+  }
+
   it("resolves token/password from OPENCLAW gateway env vars", () => {
     expect(
       resolveGatewayAuth({
@@ -347,6 +371,101 @@ describe("gateway auth", () => {
     expect(res.reason).toBe("password_mismatch");
     expect(limiter.check).toHaveBeenCalledWith(undefined, "custom-scope");
     expect(limiter.recordFailure).toHaveBeenCalledWith(undefined, "custom-scope");
+  });
+
+  it("covers auth mode/surface matrix for WS control-ui and HTTP wrappers", async () => {
+    const trustedProxyReq = {
+      socket: { remoteAddress: "10.0.0.1" },
+      headers: {
+        host: "gateway.local",
+        "x-forwarded-user": "nick@example.com",
+        "x-forwarded-proto": "https",
+      },
+    } as never;
+
+    const matrix: Array<{
+      name: string;
+      auth: Parameters<typeof authorizeGatewayConnect>[0]["auth"];
+      connectAuth: Parameters<typeof authorizeGatewayConnect>[0]["connectAuth"];
+      req?: Parameters<typeof authorizeGatewayConnect>[0]["req"];
+      trustedProxies?: string[];
+      tailscaleWhois?: Parameters<typeof authorizeGatewayConnect>[0]["tailscaleWhois"];
+      expectHttp:
+        | { ok: false; reason: string }
+        | {
+            ok: true;
+            method: NonNullable<Awaited<ReturnType<typeof authorizeGatewayConnect>>["method"]>;
+            user?: string;
+          };
+      expectWs:
+        | { ok: false; reason: string }
+        | {
+            ok: true;
+            method: NonNullable<Awaited<ReturnType<typeof authorizeGatewayConnect>>["method"]>;
+            user?: string;
+          };
+    }> = [
+      {
+        name: "token auth succeeds on both surfaces with valid shared secret",
+        auth: { mode: "token", token: "secret", allowTailscale: false },
+        connectAuth: { token: "secret" },
+        expectHttp: { ok: true, method: "token" },
+        expectWs: { ok: true, method: "token" },
+      },
+      {
+        name: "password auth succeeds on both surfaces with valid shared secret",
+        auth: { mode: "password", password: "secret", allowTailscale: false },
+        connectAuth: { password: "secret" },
+        expectHttp: { ok: true, method: "password" },
+        expectWs: { ok: true, method: "password" },
+      },
+      {
+        name: "trusted-proxy succeeds on both surfaces when headers and trust are valid",
+        auth: {
+          mode: "trusted-proxy",
+          allowTailscale: false,
+          trustedProxy: {
+            userHeader: "x-forwarded-user",
+            requiredHeaders: ["x-forwarded-proto"],
+          },
+        },
+        connectAuth: null,
+        req: trustedProxyReq,
+        trustedProxies: ["10.0.0.1"],
+        expectHttp: { ok: true, method: "trusted-proxy", user: "nick@example.com" },
+        expectWs: { ok: true, method: "trusted-proxy", user: "nick@example.com" },
+      },
+      {
+        name: "tailscale header auth is WS-control-ui only",
+        auth: { mode: "token", token: "secret", allowTailscale: true },
+        connectAuth: null,
+        req: createTailscaleForwardedReq(),
+        tailscaleWhois: createTailscaleWhois(),
+        expectHttp: { ok: false, reason: "token_missing" },
+        expectWs: { ok: true, method: "tailscale", user: "peter" },
+      },
+      {
+        name: "none mode bypasses both surfaces",
+        auth: { mode: "none", allowTailscale: false },
+        connectAuth: null,
+        expectHttp: { ok: true, method: "none" },
+        expectWs: { ok: true, method: "none" },
+      },
+    ];
+
+    for (const scenario of matrix) {
+      const shared = {
+        auth: scenario.auth,
+        connectAuth: scenario.connectAuth,
+        req: scenario.req,
+        trustedProxies: scenario.trustedProxies,
+        tailscaleWhois: scenario.tailscaleWhois,
+      };
+      const http = await authorizeHttpGatewayConnect(shared);
+      const ws = await authorizeWsControlUiGatewayConnect(shared);
+      expectAuthResult(http, scenario.expectHttp);
+      expectAuthResult(ws, scenario.expectWs);
+    }
   });
 });
 

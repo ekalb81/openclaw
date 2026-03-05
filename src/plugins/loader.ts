@@ -40,6 +40,7 @@ export type PluginLoadOptions = {
   coreGatewayHandlers?: Record<string, GatewayRequestHandler>;
   cache?: boolean;
   mode?: "full" | "validate";
+  trustAllowlistMode?: "enforce" | "warn";
 };
 
 const registryCache = new Map<string, PluginRegistry>();
@@ -86,18 +87,110 @@ const resolvePluginSdkAliasFile = (params: {
 };
 
 const resolvePluginSdkAlias = (): string | null =>
-  resolvePluginSdkAliasFile({ srcFile: "index.ts", distFile: "index.js" });
+  resolvePluginSdkAliasFile({ srcFile: "root-alias.cjs", distFile: "root-alias.cjs" });
 
-const resolvePluginSdkAccountIdAlias = (): string | null => {
-  return resolvePluginSdkAliasFile({ srcFile: "account-id.ts", distFile: "account-id.js" });
-};
+const pluginSdkScopedAliasEntries = [
+  { subpath: "core", srcFile: "core.ts", distFile: "core.js" },
+  { subpath: "compat", srcFile: "compat.ts", distFile: "compat.js" },
+  { subpath: "telegram", srcFile: "telegram.ts", distFile: "telegram.js" },
+  { subpath: "discord", srcFile: "discord.ts", distFile: "discord.js" },
+  { subpath: "slack", srcFile: "slack.ts", distFile: "slack.js" },
+  { subpath: "signal", srcFile: "signal.ts", distFile: "signal.js" },
+  { subpath: "imessage", srcFile: "imessage.ts", distFile: "imessage.js" },
+  { subpath: "whatsapp", srcFile: "whatsapp.ts", distFile: "whatsapp.js" },
+  { subpath: "line", srcFile: "line.ts", distFile: "line.js" },
+  { subpath: "msteams", srcFile: "msteams.ts", distFile: "msteams.js" },
+  { subpath: "acpx", srcFile: "acpx.ts", distFile: "acpx.js" },
+  { subpath: "bluebubbles", srcFile: "bluebubbles.ts", distFile: "bluebubbles.js" },
+  {
+    subpath: "copilot-proxy",
+    srcFile: "copilot-proxy.ts",
+    distFile: "copilot-proxy.js",
+  },
+  { subpath: "device-pair", srcFile: "device-pair.ts", distFile: "device-pair.js" },
+  {
+    subpath: "diagnostics-otel",
+    srcFile: "diagnostics-otel.ts",
+    distFile: "diagnostics-otel.js",
+  },
+  { subpath: "diffs", srcFile: "diffs.ts", distFile: "diffs.js" },
+  { subpath: "feishu", srcFile: "feishu.ts", distFile: "feishu.js" },
+  {
+    subpath: "google-gemini-cli-auth",
+    srcFile: "google-gemini-cli-auth.ts",
+    distFile: "google-gemini-cli-auth.js",
+  },
+  { subpath: "googlechat", srcFile: "googlechat.ts", distFile: "googlechat.js" },
+  { subpath: "irc", srcFile: "irc.ts", distFile: "irc.js" },
+  { subpath: "llm-task", srcFile: "llm-task.ts", distFile: "llm-task.js" },
+  { subpath: "lobster", srcFile: "lobster.ts", distFile: "lobster.js" },
+  { subpath: "matrix", srcFile: "matrix.ts", distFile: "matrix.js" },
+  { subpath: "mattermost", srcFile: "mattermost.ts", distFile: "mattermost.js" },
+  { subpath: "memory-core", srcFile: "memory-core.ts", distFile: "memory-core.js" },
+  {
+    subpath: "memory-lancedb",
+    srcFile: "memory-lancedb.ts",
+    distFile: "memory-lancedb.js",
+  },
+  {
+    subpath: "minimax-portal-auth",
+    srcFile: "minimax-portal-auth.ts",
+    distFile: "minimax-portal-auth.js",
+  },
+  {
+    subpath: "nextcloud-talk",
+    srcFile: "nextcloud-talk.ts",
+    distFile: "nextcloud-talk.js",
+  },
+  { subpath: "nostr", srcFile: "nostr.ts", distFile: "nostr.js" },
+  { subpath: "open-prose", srcFile: "open-prose.ts", distFile: "open-prose.js" },
+  {
+    subpath: "phone-control",
+    srcFile: "phone-control.ts",
+    distFile: "phone-control.js",
+  },
+  {
+    subpath: "qwen-portal-auth",
+    srcFile: "qwen-portal-auth.ts",
+    distFile: "qwen-portal-auth.js",
+  },
+  {
+    subpath: "synology-chat",
+    srcFile: "synology-chat.ts",
+    distFile: "synology-chat.js",
+  },
+  { subpath: "talk-voice", srcFile: "talk-voice.ts", distFile: "talk-voice.js" },
+  { subpath: "test-utils", srcFile: "test-utils.ts", distFile: "test-utils.js" },
+  {
+    subpath: "thread-ownership",
+    srcFile: "thread-ownership.ts",
+    distFile: "thread-ownership.js",
+  },
+  { subpath: "tlon", srcFile: "tlon.ts", distFile: "tlon.js" },
+  { subpath: "twitch", srcFile: "twitch.ts", distFile: "twitch.js" },
+  { subpath: "voice-call", srcFile: "voice-call.ts", distFile: "voice-call.js" },
+  { subpath: "zalo", srcFile: "zalo.ts", distFile: "zalo.js" },
+  { subpath: "zalouser", srcFile: "zalouser.ts", distFile: "zalouser.js" },
+  { subpath: "account-id", srcFile: "account-id.ts", distFile: "account-id.js" },
+  {
+    subpath: "keyed-async-queue",
+    srcFile: "keyed-async-queue.ts",
+    distFile: "keyed-async-queue.js",
+  },
+] as const;
 
-const resolvePluginSdkCoreAlias = (): string | null => {
-  return resolvePluginSdkAliasFile({ srcFile: "core.ts", distFile: "core.js" });
-};
-
-const resolvePluginSdkTelegramAlias = (): string | null => {
-  return resolvePluginSdkAliasFile({ srcFile: "telegram.ts", distFile: "telegram.js" });
+const resolvePluginSdkScopedAliasMap = (): Record<string, string> => {
+  const aliasMap: Record<string, string> = {};
+  for (const entry of pluginSdkScopedAliasEntries) {
+    const resolved = resolvePluginSdkAliasFile({
+      srcFile: entry.srcFile,
+      distFile: entry.distFile,
+    });
+    if (resolved) {
+      aliasMap[`openclaw/plugin-sdk/${entry.subpath}`] = resolved;
+    }
+  }
+  return aliasMap;
 };
 
 export const __testing = {
@@ -237,6 +330,30 @@ type PluginProvenanceIndex = {
   installRules: Map<string, InstallTrackingRule>;
 };
 
+function requiresExplicitAllowlistForOrigin(origin: PluginRecord["origin"]): boolean {
+  // Configured load paths are treated as explicit trust decisions by the operator.
+  // Auto-discovered workspace/global plugins must be allowlisted.
+  return origin === "workspace" || origin === "global";
+}
+
+function resolveTrustAllowlistMode(params: {
+  mode: PluginLoadOptions["mode"];
+  explicit?: PluginLoadOptions["trustAllowlistMode"];
+  env?: NodeJS.ProcessEnv;
+}): "enforce" | "warn" {
+  if (params.explicit === "enforce" || params.explicit === "warn") {
+    return params.explicit;
+  }
+  const fromEnv = params.env?.OPENCLAW_PLUGIN_TRUST_ALLOWLIST_MODE?.trim().toLowerCase();
+  if (fromEnv === "warn") {
+    return "warn";
+  }
+  if (params.mode === "validate") {
+    return "warn";
+  }
+  return "enforce";
+}
+
 function createPathMatcher(): PathMatcher {
   return { exact: new Set<string>(), dirs: [] };
 }
@@ -322,6 +439,7 @@ function warnWhenAllowlistIsOpen(params: {
   logger: PluginLogger;
   pluginsEnabled: boolean;
   allow: string[];
+  trustAllowlistMode: "enforce" | "warn";
   discoverablePlugins: Array<{ id: string; source: string; origin: PluginRecord["origin"] }>;
 }) {
   if (!params.pluginsEnabled) {
@@ -330,18 +448,27 @@ function warnWhenAllowlistIsOpen(params: {
   if (params.allow.length > 0) {
     return;
   }
-  const nonBundled = params.discoverablePlugins.filter((entry) => entry.origin !== "bundled");
-  if (nonBundled.length === 0) {
+  const untrustedDiscoverable = params.discoverablePlugins.filter((entry) =>
+    requiresExplicitAllowlistForOrigin(entry.origin),
+  );
+  if (untrustedDiscoverable.length === 0) {
     return;
   }
-  const preview = nonBundled
+  const preview = untrustedDiscoverable
     .slice(0, 6)
     .map((entry) => `${entry.id} (${entry.source})`)
     .join(", ");
-  const extra = nonBundled.length > 6 ? ` (+${nonBundled.length - 6} more)` : "";
-  params.logger.warn(
-    `[plugins] plugins.allow is empty; discovered non-bundled plugins may auto-load: ${preview}${extra}. Set plugins.allow to explicit trusted ids.`,
-  );
+  const extra =
+    untrustedDiscoverable.length > 6 ? ` (+${untrustedDiscoverable.length - 6} more)` : "";
+  if (params.trustAllowlistMode === "enforce") {
+    params.logger.warn(
+      `[plugins] plugins.allow is empty; auto-discovered plugins are blocked until trusted: ${preview}${extra}. Add plugin ids to plugins.allow.`,
+    );
+  } else {
+    params.logger.warn(
+      `[plugins] plugins.allow is empty; auto-discovered plugins may load without explicit trust: ${preview}${extra}. Set plugins.allow to explicit trusted ids.`,
+    );
+  }
 }
 
 function warnAboutUntrackedLoadedPlugins(params: {
@@ -385,6 +512,11 @@ export function loadOpenClawPlugins(options: PluginLoadOptions = {}): PluginRegi
   const cfg = applyTestPluginDefaults(options.config ?? {}, process.env);
   const logger = options.logger ?? defaultLogger();
   const validateOnly = options.mode === "validate";
+  const trustAllowlistMode = resolveTrustAllowlistMode({
+    mode: options.mode,
+    explicit: options.trustAllowlistMode,
+    env: process.env,
+  });
   const normalized = normalizePluginsConfig(cfg.plugins);
   const cacheKey = buildCacheKey({
     workspaceDir: options.workspaceDir,
@@ -444,6 +576,7 @@ export function loadOpenClawPlugins(options: PluginLoadOptions = {}): PluginRegi
   const discovery = discoverOpenClawPlugins({
     workspaceDir: options.workspaceDir,
     extraPaths: normalized.loadPaths,
+    cache: options.cache,
   });
   const manifestRegistry = loadPluginManifestRegistry({
     config: cfg,
@@ -457,6 +590,7 @@ export function loadOpenClawPlugins(options: PluginLoadOptions = {}): PluginRegi
     logger,
     pluginsEnabled: normalized.enabled,
     allow: normalized.allow,
+    trustAllowlistMode,
     discoverablePlugins: manifestRegistry.plugins.map((plugin) => ({
       id: plugin.id,
       source: plugin.source,
@@ -475,16 +609,9 @@ export function loadOpenClawPlugins(options: PluginLoadOptions = {}): PluginRegi
       return jitiLoader;
     }
     const pluginSdkAlias = resolvePluginSdkAlias();
-    const pluginSdkAccountIdAlias = resolvePluginSdkAccountIdAlias();
-    const pluginSdkCoreAlias = resolvePluginSdkCoreAlias();
-    const pluginSdkTelegramAlias = resolvePluginSdkTelegramAlias();
     const aliasMap = {
       ...(pluginSdkAlias ? { "openclaw/plugin-sdk": pluginSdkAlias } : {}),
-      ...(pluginSdkCoreAlias ? { "openclaw/plugin-sdk/core": pluginSdkCoreAlias } : {}),
-      ...(pluginSdkTelegramAlias ? { "openclaw/plugin-sdk/telegram": pluginSdkTelegramAlias } : {}),
-      ...(pluginSdkAccountIdAlias
-        ? { "openclaw/plugin-sdk/account-id": pluginSdkAccountIdAlias }
-        : {}),
+      ...resolvePluginSdkScopedAliasMap(),
     };
     jitiLoader = createJiti(import.meta.url, {
       interopDefault: true,
@@ -572,6 +699,45 @@ export function loadOpenClawPlugins(options: PluginLoadOptions = {}): PluginRegi
       registry.plugins.push(record);
       seenIds.set(pluginId, candidate.origin);
       continue;
+    }
+
+    if (
+      trustAllowlistMode === "enforce" &&
+      normalized.allow.length === 0 &&
+      !validateOnly &&
+      requiresExplicitAllowlistForOrigin(candidate.origin)
+    ) {
+      record.status = "disabled";
+      record.error = "blocked by trust policy (plugins.allow required)";
+      registry.plugins.push(record);
+      seenIds.set(pluginId, candidate.origin);
+      registry.diagnostics.push({
+        level: "warn",
+        pluginId: record.id,
+        source: record.source,
+        message:
+          "blocked by trust policy: auto-discovered plugins require explicit plugins.allow entries",
+      });
+      continue;
+    }
+
+    // Fast-path bundled memory plugins that are guaranteed disabled by slot policy.
+    // This avoids opening/importing heavy memory plugin modules that will never register.
+    if (candidate.origin === "bundled" && manifestRecord.kind === "memory") {
+      const earlyMemoryDecision = resolveMemorySlotDecision({
+        id: record.id,
+        kind: "memory",
+        slot: memorySlot,
+        selectedId: selectedMemoryPluginId,
+      });
+      if (!earlyMemoryDecision.enabled) {
+        record.enabled = false;
+        record.status = "disabled";
+        record.error = earlyMemoryDecision.reason;
+        registry.plugins.push(record);
+        seenIds.set(pluginId, candidate.origin);
+        continue;
+      }
     }
 
     if (!manifestRecord.configSchema) {

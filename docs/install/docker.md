@@ -31,6 +31,8 @@ Sandboxing details: [Sandboxing](/gateway/sandboxing)
 - If running on a VPS/public host, review
   [Security hardening for network exposure](/gateway/security#04-network-exposure-bind--port--firewall),
   especially Docker `DOCKER-USER` firewall policy.
+- For bind/auth/proxy choices across deployment shapes, use the consolidated
+  [Deployment hardening matrix](/gateway/deployment-hardening).
 
 ## Containerized Gateway (Docker Compose)
 
@@ -383,9 +385,22 @@ This avoids re-running `pnpm install` unless lockfiles change:
 ```dockerfile
 FROM node:22-bookworm
 
-# Install Bun (required for build scripts)
-RUN curl -fsSL https://bun.sh/install | bash
-ENV PATH="/root/.bun/bin:${PATH}"
+# Install Bun (required for build scripts) with checksum verification
+ARG OPENCLAW_BUN_VERSION="1.2.0"
+RUN set -eux; \
+    apt-get update; \
+    DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends ca-certificates curl unzip; \
+    arch="$(dpkg --print-architecture)"; \
+    case "$arch" in amd64) bun_arch="x64" ;; arm64) bun_arch="aarch64" ;; *) exit 1 ;; esac; \
+    bun_asset="bun-linux-${bun_arch}.zip"; \
+    curl -fsSL "https://github.com/oven-sh/bun/releases/download/bun-v${OPENCLAW_BUN_VERSION}/${bun_asset}" -o /tmp/bun.zip; \
+    curl -fsSL "https://github.com/oven-sh/bun/releases/download/bun-v${OPENCLAW_BUN_VERSION}/SHASUMS256.txt" -o /tmp/SHASUMS256.txt; \
+    expected="$(awk -v asset="$bun_asset" '$2 == asset { print $1; exit }' /tmp/SHASUMS256.txt)"; \
+    actual="$(sha256sum /tmp/bun.zip | awk '{print $1}')"; \
+    [ -n "$expected" ] && [ "$actual" = "$expected" ]; \
+    unzip -q /tmp/bun.zip -d /tmp; \
+    install -m 0755 "/tmp/bun-linux-${bun_arch}/bun" /usr/local/bin/bun; \
+    rm -rf /tmp/bun.zip /tmp/SHASUMS256.txt "/tmp/bun-linux-${bun_arch}" /var/lib/apt/lists/*
 
 RUN corepack enable
 

@@ -1,4 +1,5 @@
 import { describe, expect, test } from "vitest";
+import { expectResolvedRouteContract } from "../../test/helpers/inbound-contract.js";
 import type { ChatType } from "../channels/chat-type.js";
 import type { OpenClawConfig } from "../config/config.js";
 import { resolveAgentRoute } from "./resolve-route.js";
@@ -147,6 +148,36 @@ describe("resolveAgentRoute", () => {
       peer: { kind: "channel", id: 1468834856187203680n as unknown as string },
     });
     expect(route.sessionKey).toBe("agent:main:discord:channel:1468834856187203680");
+  });
+
+  test("normalizes route inputs into canonical route contracts", () => {
+    const cfg: OpenClawConfig = {
+      bindings: [
+        {
+          agentId: "Ops",
+          match: {
+            channel: "DISCORD",
+            accountId: "DEFAULT",
+            peer: { kind: "channel", id: "C-ALPHA" },
+          },
+        },
+      ],
+      session: {
+        dmScope: "per-channel-peer",
+      },
+    };
+    const route = resolveAgentRoute({
+      cfg,
+      channel: "  DiScOrD ",
+      accountId: " default ",
+      peer: { kind: "channel", id: "  C-ALPHA " },
+    });
+    expectResolvedRouteContract(route);
+    expect(route.agentId).toBe("ops");
+    expect(route.channel).toBe("discord");
+    expect(route.accountId).toBe("default");
+    expect(route.sessionKey).toBe("agent:ops:discord:channel:c-alpha");
+    expect(route.matchedBy).toBe("binding.peer");
   });
 
   test("guild binding wins over account binding when peer not bound", () => {
@@ -436,6 +467,28 @@ describe("parentPeer binding inheritance (thread support)", () => {
     };
     const route = resolveDiscordThreadRoute({ cfg });
     expect(route.agentId).toBe("adecco");
+    expect(route.matchedBy).toBe("binding.peer.parent");
+  });
+
+  test("parent peer fallback honors group/channel peer-kind compatibility", () => {
+    const cfg: OpenClawConfig = {
+      bindings: [
+        {
+          agentId: "parent-group-agent",
+          match: {
+            channel: "slack",
+            peer: { kind: "group", id: "C_PARENT" },
+          },
+        },
+      ],
+    };
+    const route = resolveAgentRoute({
+      cfg,
+      channel: "slack",
+      peer: { kind: "channel", id: "thread-123" },
+      parentPeer: { kind: "channel", id: "C_PARENT" },
+    });
+    expect(route.agentId).toBe("parent-group-agent");
     expect(route.matchedBy).toBe("binding.peer.parent");
   });
 
