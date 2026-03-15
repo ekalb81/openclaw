@@ -1,5 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
+import { GatewayRequestError } from "../gateway.ts";
 import {
+  abortChatRun,
   handleChatEvent,
   loadChatHistory,
   sendChatMessage,
@@ -542,189 +544,60 @@ describe("loadChatHistory", () => {
   });
 });
 
-describe("chat reliability regressions", () => {
-  it("accepts aliased session keys in handleChatEvent", () => {
+describe("sendChatMessage", () => {
+  it("formats structured non-auth connect failures for chat send", async () => {
+    const request = vi.fn().mockRejectedValue(
+      new GatewayRequestError({
+        code: "INVALID_REQUEST",
+        message: "Fetch failed",
+        details: { code: "CONTROL_UI_ORIGIN_NOT_ALLOWED" },
+      }),
+    );
     const state = createState({
-      sessionKey: "main",
-      chatRunId: "run-1",
-      chatStream: "",
-      chatStreamStartedAt: 100,
+      connected: true,
+      client: { request } as unknown as ChatState["client"],
     });
 
-    const payload: ChatEventPayload = {
+    const result = await sendChatMessage(state, "hello");
+
+    expect(result).toBeNull();
+    expect(state.lastError).toContain("origin not allowed");
+    expect(state.chatMessages.at(-1)).toMatchObject({
+      role: "assistant",
+      content: [
+        {
+          type: "text",
+          text: expect.stringContaining("origin not allowed"),
+        },
+      ],
+    });
+  });
+});
+
+describe("abortChatRun", () => {
+  it("formats structured non-auth connect failures for chat abort", async () => {
+    // Abort now shares the same structured connect-error formatter as send.
+    const request = vi.fn().mockRejectedValue(
+      new GatewayRequestError({
+        code: "INVALID_REQUEST",
+        message: "Fetch failed",
+        details: { code: "CONTROL_UI_DEVICE_IDENTITY_REQUIRED" },
+      }),
+    );
+    const state = createState({
+      connected: true,
+      chatRunId: "run-1",
+      client: { request } as unknown as ChatState["client"],
+    });
+
+    const result = await abortChatRun(state);
+
+    expect(result).toBe(false);
+    expect(request).toHaveBeenCalledWith("chat.abort", {
+      sessionKey: "main",
       runId: "run-1",
-      sessionKey: "agent:main:main",
-      state: "final",
-      message: {
-        role: "assistant",
-        content: [{ type: "text", text: "done" }],
-      },
-    };
-
-    expect(handleChatEvent(state, payload)).toBe("final");
-    expect(state.chatRunId).toBeNull();
-    expect(state.chatMessages).toEqual([payload.message]);
-  });
-
-  it("recovers a stuck run via watchdog timeout", async () => {
-    vi.useFakeTimers();
-    try {
-      const request = vi.fn(async (method: string) => {
-        if (method === "chat.send") {
-          return {};
-        }
-        if (method === "chat.history") {
-          return {
-            messages: [{ role: "assistant", content: [{ type: "text", text: "Recovered" }] }],
-            thinkingLevel: "medium",
-          };
-        }
-        return {};
-      });
-      const state = createState({
-        connected: true,
-        client: { request } as unknown as ChatState["client"],
-      });
-      (state as unknown as { settings: Record<string, unknown> }).settings = {
-        chatRunWatchdogEnabled: true,
-        chatRunWatchdogMs: 5_000,
-      };
-
-      const runId = await sendChatMessage(state, "hello");
-      expect(runId).toBeTruthy();
-      expect(state.chatRunId).toBe(runId);
-
-      await vi.advanceTimersByTimeAsync(5_000);
-      await Promise.resolve();
-
-      expect(request).toHaveBeenCalledWith("chat.history", {
-        sessionKey: "main",
-        limit: 200,
-      });
-      expect(state.chatRunId).toBeNull();
-      expect(state.chatStream).toBeNull();
-      expect(state.chatStreamStartedAt).toBeNull();
-    } finally {
-      vi.useRealTimers();
-    }
-  });
-
-  it("does not run watchdog recovery when disabled", async () => {
-    vi.useFakeTimers();
-    try {
-      const request = vi.fn(async (method: string) => {
-        if (method === "chat.send") {
-          return {};
-        }
-        if (method === "chat.history") {
-          return { messages: [] };
-        }
-        return {};
-      });
-      const state = createState({
-        connected: true,
-        client: { request } as unknown as ChatState["client"],
-      });
-      (state as unknown as { settings: Record<string, unknown> }).settings = {
-        chatRunWatchdogEnabled: false,
-        chatRunWatchdogMs: 5_000,
-      };
-
-      const runId = await sendChatMessage(state, "hello");
-      expect(runId).toBeTruthy();
-
-      await vi.advanceTimersByTimeAsync(30_000);
-      await Promise.resolve();
-
-      expect(state.chatRunId).toBe(runId);
-      const historyCalls = request.mock.calls.filter((call) => call[0] === "chat.history");
-      expect(historyCalls).toHaveLength(0);
-    } finally {
-      vi.useRealTimers();
-    }
-  });
-
-  it("extends watchdog deadline when run activity arrives", async () => {
-    vi.useFakeTimers();
-    try {
-      const request = vi.fn(async (method: string) => {
-        if (method === "chat.send") {
-          return {};
-        }
-        if (method === "chat.history") {
-          return { messages: [] };
-        }
-        return {};
-      });
-      const state = createState({
-        connected: true,
-        client: { request } as unknown as ChatState["client"],
-      });
-      (state as unknown as { settings: Record<string, unknown> }).settings = {
-        chatRunWatchdogEnabled: true,
-        chatRunWatchdogMs: 5_000,
-      };
-
-      const runId = await sendChatMessage(state, "hello");
-      expect(runId).toBeTruthy();
-
-      await vi.advanceTimersByTimeAsync(4_000);
-      const deltaPayload: ChatEventPayload = {
-        runId: runId!,
-        sessionKey: "main",
-        state: "delta",
-        message: { role: "assistant", content: [{ type: "text", text: "still working" }] },
-      };
-      expect(handleChatEvent(state, deltaPayload)).toBe("delta");
-
-      await vi.advanceTimersByTimeAsync(1_500);
-      expect(state.chatRunId).toBe(runId);
-
-      await vi.advanceTimersByTimeAsync(3_700);
-      await Promise.resolve();
-      expect(state.chatRunId).toBeNull();
-
-      const historyCalls = request.mock.calls.filter((call) => call[0] === "chat.history");
-      expect(historyCalls).toHaveLength(1);
-    } finally {
-      vi.useRealTimers();
-    }
-  });
-
-  it("clears stale run on watchdog timeout after disconnect without history reload", async () => {
-    vi.useFakeTimers();
-    try {
-      const request = vi.fn(async (method: string) => {
-        if (method === "chat.send") {
-          return {};
-        }
-        if (method === "chat.history") {
-          return { messages: [] };
-        }
-        return {};
-      });
-      const state = createState({
-        connected: true,
-        client: { request } as unknown as ChatState["client"],
-      });
-      (state as unknown as { settings: Record<string, unknown> }).settings = {
-        chatRunWatchdogEnabled: true,
-        chatRunWatchdogMs: 5_000,
-      };
-
-      const runId = await sendChatMessage(state, "hello");
-      expect(runId).toBeTruthy();
-      state.connected = false;
-
-      await vi.advanceTimersByTimeAsync(5_000);
-      await Promise.resolve();
-
-      expect(state.chatRunId).toBeNull();
-      const historyCalls = request.mock.calls.filter((call) => call[0] === "chat.history");
-      expect(historyCalls).toHaveLength(0);
-    } finally {
-      vi.useRealTimers();
-    }
+    });
+    expect(state.lastError).toContain("device identity required");
   });
 });
 

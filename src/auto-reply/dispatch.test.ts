@@ -1,10 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import type { OpenClawConfig } from "../config/config.js";
-import {
-  clearPendingGroupHistoryAfterDispatch,
-  dispatchInboundMessage,
-  withReplyDispatcher,
-} from "./dispatch.js";
+import { dispatchInboundMessage, withReplyDispatcher } from "./dispatch.js";
 import type { ReplyDispatcher } from "./reply/reply-dispatcher.js";
 import { buildTestCtx } from "./reply/test-ctx.js";
 
@@ -91,76 +87,5 @@ describe("withReplyDispatcher", () => {
     });
 
     expect(order).toEqual(["sendFinalReply", "markComplete", "waitForIdle"]);
-  });
-});
-
-describe("clearPendingGroupHistoryAfterDispatch", () => {
-  it("clears pending history for grouped conversations with a key", () => {
-    const history = new Map([
-      [
-        "group-1",
-        [
-          {
-            sender: "alice",
-            body: "hello",
-            timestamp: Date.now(),
-            messageId: "m1",
-          },
-        ],
-      ],
-    ]);
-    clearPendingGroupHistoryAfterDispatch({
-      isGroup: true,
-      historyKey: "group-1",
-      historyLimit: 5,
-      historyMap: history,
-    });
-    expect(history.get("group-1")).toEqual([]);
-  });
-
-  it("skips history cleanup for non-group inbound", () => {
-    const history = new Map([
-      [
-        "group-1",
-        [
-          {
-            sender: "alice",
-            body: "hello",
-            timestamp: Date.now(),
-            messageId: "m1",
-          },
-        ],
-      ],
-    ]);
-    clearPendingGroupHistoryAfterDispatch({
-      isGroup: false,
-      historyKey: "group-1",
-      historyLimit: 5,
-      historyMap: history,
-    });
-    expect(history.get("group-1")?.length).toBe(1);
-  });
-
-  it("skips history cleanup when group key is missing", () => {
-    const history = new Map([
-      [
-        "group-1",
-        [
-          {
-            sender: "alice",
-            body: "hello",
-            timestamp: Date.now(),
-            messageId: "m1",
-          },
-        ],
-      ],
-    ]);
-    clearPendingGroupHistoryAfterDispatch({
-      isGroup: true,
-      historyKey: undefined,
-      historyLimit: 5,
-      historyMap: history,
-    });
-    expect(history.get("group-1")?.length).toBe(1);
   });
 });

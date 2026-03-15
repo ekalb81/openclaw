@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import type { AuthRateLimiter } from "./auth-rate-limit.js";
 import {
+  assertGatewayAuthConfigured,
   authorizeGatewayConnect,
   authorizeHttpGatewayConnect,
   authorizeWsControlUiGatewayConnect,
@@ -86,30 +87,6 @@ describe("gateway auth", () => {
     expect(res.user).toBe(params.expected.user);
   }
 
-  function expectAuthResult(
-    actual: Awaited<ReturnType<typeof authorizeGatewayConnect>>,
-    expected:
-      | {
-          ok: false;
-          reason: string;
-        }
-      | {
-          ok: true;
-          method: NonNullable<Awaited<ReturnType<typeof authorizeGatewayConnect>>["method"]>;
-          user?: string;
-        },
-  ) {
-    expect(actual.ok).toBe(expected.ok);
-    if (!expected.ok) {
-      expect(actual.reason).toBe(expected.reason);
-      return;
-    }
-    expect(actual.method).toBe(expected.method);
-    if (expected.user) {
-      expect(actual.user).toBe(expected.user);
-    }
-  }
-
   it("resolves token/password from OPENCLAW gateway env vars", () => {
     expect(
       resolveGatewayAuth({
@@ -149,7 +126,7 @@ describe("gateway auth", () => {
       resolveGatewayAuth({
         authConfig: {
           token: "config-token",
-          password: "config-password",
+          password: "config-password", // pragma: allowlist secret
         },
         env: {
           OPENCLAW_GATEWAY_TOKEN: "env-token",
@@ -158,7 +135,26 @@ describe("gateway auth", () => {
       }),
     ).toMatchObject({
       token: "config-token",
-      password: "config-password",
+      password: "config-password", // pragma: allowlist secret
+    });
+  });
+
+  it("treats env-template auth secrets as SecretRefs instead of plaintext", () => {
+    expect(
+      resolveGatewayAuth({
+        authConfig: {
+          token: "${OPENCLAW_GATEWAY_TOKEN}",
+          password: "${OPENCLAW_GATEWAY_PASSWORD}",
+        },
+        env: {
+          OPENCLAW_GATEWAY_TOKEN: "env-token",
+          OPENCLAW_GATEWAY_PASSWORD: "env-password",
+        } as NodeJS.ProcessEnv,
+      }),
+    ).toMatchObject({
+      token: "env-token",
+      password: "env-password",
+      mode: "password",
     });
   });
 
@@ -179,7 +175,7 @@ describe("gateway auth", () => {
   it("marks mode source as override when runtime mode override is provided", () => {
     expect(
       resolveGatewayAuth({
-        authConfig: { mode: "password", password: "config-password" },
+        authConfig: { mode: "password", password: "config-password" }, // pragma: allowlist secret
         authOverride: { mode: "token" },
         env: {} as NodeJS.ProcessEnv,
       }),
@@ -187,7 +183,7 @@ describe("gateway auth", () => {
       mode: "token",
       modeSource: "override",
       token: undefined,
-      password: "config-password",
+      password: "config-password", // pragma: allowlist secret
     });
   });
 
@@ -372,100 +368,98 @@ describe("gateway auth", () => {
     expect(limiter.check).toHaveBeenCalledWith(undefined, "custom-scope");
     expect(limiter.recordFailure).toHaveBeenCalledWith(undefined, "custom-scope");
   });
+  it("does not record rate-limit failure for missing token (misconfigured client, not brute-force)", async () => {
+    const limiter = createLimiterSpy();
+    const res = await authorizeGatewayConnect({
+      auth: { mode: "token", token: "secret", allowTailscale: false },
+      connectAuth: null,
+      rateLimiter: limiter,
+    });
 
-  it("covers auth mode/surface matrix for WS control-ui and HTTP wrappers", async () => {
-    const trustedProxyReq = {
-      socket: { remoteAddress: "10.0.0.1" },
-      headers: {
-        host: "gateway.local",
-        "x-forwarded-user": "nick@example.com",
-        "x-forwarded-proto": "https",
-      },
-    } as never;
+    expect(res.ok).toBe(false);
+    expect(res.reason).toBe("token_missing");
+    expect(limiter.recordFailure).not.toHaveBeenCalled();
+  });
 
-    const matrix: Array<{
-      name: string;
-      auth: Parameters<typeof authorizeGatewayConnect>[0]["auth"];
-      connectAuth: Parameters<typeof authorizeGatewayConnect>[0]["connectAuth"];
-      req?: Parameters<typeof authorizeGatewayConnect>[0]["req"];
-      trustedProxies?: string[];
-      tailscaleWhois?: Parameters<typeof authorizeGatewayConnect>[0]["tailscaleWhois"];
-      expectHttp:
-        | { ok: false; reason: string }
-        | {
-            ok: true;
-            method: NonNullable<Awaited<ReturnType<typeof authorizeGatewayConnect>>["method"]>;
-            user?: string;
-          };
-      expectWs:
-        | { ok: false; reason: string }
-        | {
-            ok: true;
-            method: NonNullable<Awaited<ReturnType<typeof authorizeGatewayConnect>>["method"]>;
-            user?: string;
-          };
-    }> = [
-      {
-        name: "token auth succeeds on both surfaces with valid shared secret",
-        auth: { mode: "token", token: "secret", allowTailscale: false },
-        connectAuth: { token: "secret" },
-        expectHttp: { ok: true, method: "token" },
-        expectWs: { ok: true, method: "token" },
-      },
-      {
-        name: "password auth succeeds on both surfaces with valid shared secret",
-        auth: { mode: "password", password: "secret", allowTailscale: false },
-        connectAuth: { password: "secret" },
-        expectHttp: { ok: true, method: "password" },
-        expectWs: { ok: true, method: "password" },
-      },
-      {
-        name: "trusted-proxy succeeds on both surfaces when headers and trust are valid",
-        auth: {
-          mode: "trusted-proxy",
-          allowTailscale: false,
-          trustedProxy: {
-            userHeader: "x-forwarded-user",
-            requiredHeaders: ["x-forwarded-proto"],
-          },
-        },
-        connectAuth: null,
-        req: trustedProxyReq,
-        trustedProxies: ["10.0.0.1"],
-        expectHttp: { ok: true, method: "trusted-proxy", user: "nick@example.com" },
-        expectWs: { ok: true, method: "trusted-proxy", user: "nick@example.com" },
-      },
-      {
-        name: "tailscale header auth is WS-control-ui only",
-        auth: { mode: "token", token: "secret", allowTailscale: true },
-        connectAuth: null,
-        req: createTailscaleForwardedReq(),
-        tailscaleWhois: createTailscaleWhois(),
-        expectHttp: { ok: false, reason: "token_missing" },
-        expectWs: { ok: true, method: "tailscale", user: "peter" },
-      },
-      {
-        name: "none mode bypasses both surfaces",
-        auth: { mode: "none", allowTailscale: false },
-        connectAuth: null,
-        expectHttp: { ok: true, method: "none" },
-        expectWs: { ok: true, method: "none" },
-      },
-    ];
+  it("does not record rate-limit failure for missing password (misconfigured client, not brute-force)", async () => {
+    const limiter = createLimiterSpy();
+    const res = await authorizeGatewayConnect({
+      auth: { mode: "password", password: "secret", allowTailscale: false },
+      connectAuth: null,
+      rateLimiter: limiter,
+    });
 
-    for (const scenario of matrix) {
-      const shared = {
-        auth: scenario.auth,
-        connectAuth: scenario.connectAuth,
-        req: scenario.req,
-        trustedProxies: scenario.trustedProxies,
-        tailscaleWhois: scenario.tailscaleWhois,
-      };
-      const http = await authorizeHttpGatewayConnect(shared);
-      const ws = await authorizeWsControlUiGatewayConnect(shared);
-      expectAuthResult(http, scenario.expectHttp);
-      expectAuthResult(ws, scenario.expectWs);
-    }
+    expect(res.ok).toBe(false);
+    expect(res.reason).toBe("password_missing");
+    expect(limiter.recordFailure).not.toHaveBeenCalled();
+  });
+
+  it("still records rate-limit failure for wrong token (brute-force attempt)", async () => {
+    const limiter = createLimiterSpy();
+    const res = await authorizeGatewayConnect({
+      auth: { mode: "token", token: "secret", allowTailscale: false },
+      connectAuth: { token: "wrong" },
+      rateLimiter: limiter,
+    });
+
+    expect(res.ok).toBe(false);
+    expect(res.reason).toBe("token_mismatch");
+    expect(limiter.recordFailure).toHaveBeenCalled();
+  });
+
+  it("still records rate-limit failure for wrong password (brute-force attempt)", async () => {
+    const limiter = createLimiterSpy();
+    const res = await authorizeGatewayConnect({
+      auth: { mode: "password", password: "secret", allowTailscale: false },
+      connectAuth: { password: "wrong" },
+      rateLimiter: limiter,
+    });
+
+    expect(res.ok).toBe(false);
+    expect(res.reason).toBe("password_mismatch");
+    expect(limiter.recordFailure).toHaveBeenCalled();
+  });
+  it("throws specific error when password is a provider reference object", () => {
+    const auth = resolveGatewayAuth({
+      authConfig: {
+        mode: "password",
+        password: { source: "exec", provider: "op", id: "pw" } as never,
+      },
+    });
+    expect(() =>
+      assertGatewayAuthConfigured(auth, {
+        mode: "password",
+        password: { source: "exec", provider: "op", id: "pw" } as never,
+      }),
+    ).toThrow(/provider reference object/);
+  });
+
+  it("accepts password mode when env provides OPENCLAW_GATEWAY_PASSWORD", () => {
+    const rawPasswordRef = { source: "exec", provider: "op", id: "pw" } as never;
+    const auth = resolveGatewayAuth({
+      authConfig: {
+        mode: "password",
+        password: rawPasswordRef,
+      },
+      env: {
+        OPENCLAW_GATEWAY_PASSWORD: "env-password",
+      } as NodeJS.ProcessEnv,
+    });
+
+    expect(auth.password).toBe("env-password");
+    expect(() =>
+      assertGatewayAuthConfigured(auth, {
+        mode: "password",
+        password: rawPasswordRef,
+      }),
+    ).not.toThrow();
+  });
+
+  it("throws generic error when password mode has no password at all", () => {
+    const auth = resolveGatewayAuth({ authConfig: { mode: "password" } });
+    expect(() => assertGatewayAuthConfigured(auth, { mode: "password" })).toThrow(
+      "gateway auth mode is password, but no password was configured",
+    );
   });
 });
 

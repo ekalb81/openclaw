@@ -8,15 +8,11 @@ async function waitForPersistedSecret(configPath: string, expectedSecret: string
   const deadline = Date.now() + 3_000;
   while (Date.now() < deadline) {
     const raw = await fs.readFile(configPath, "utf-8");
-    try {
-      const parsed = JSON.parse(raw) as {
-        commands?: { ownerDisplaySecret?: string };
-      };
-      if (parsed.commands?.ownerDisplaySecret === expectedSecret) {
-        return;
-      }
-    } catch {
-      // Atomic write/rename can race with reads in integration tests; retry.
+    const parsed = JSON.parse(raw) as {
+      commands?: { ownerDisplaySecret?: string };
+    };
+    if (parsed.commands?.ownerDisplaySecret === expectedSecret) {
+      return;
     }
     await new Promise((resolve) => setTimeout(resolve, 5));
   }

@@ -63,23 +63,4 @@ describe("gateway startup log", () => {
       `listening on ws://127.0.0.1:18789, ws://[::1]:18789 (PID ${process.pid})`,
     ]);
   });
-
-  it("logs bounded channel startup concurrency", () => {
-    const info = vi.fn();
-    const warn = vi.fn();
-
-    logGatewayStartup({
-      cfg: {
-        gateway: {
-          channelStartupConcurrency: 99,
-        },
-      },
-      bindHost: "127.0.0.1",
-      port: 18789,
-      log: { info, warn },
-      isNixMode: false,
-    });
-
-    expect(info).toHaveBeenCalledWith("channel startup concurrency: 16");
-  });
 });

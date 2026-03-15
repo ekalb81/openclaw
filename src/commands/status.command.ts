@@ -1,6 +1,6 @@
 import { formatCliCommand } from "../cli/command-format.js";
 import { withProgress } from "../cli/progress.js";
-import { loadConfig, resolveGatewayPort } from "../config/config.js";
+import { resolveGatewayPort } from "../config/config.js";
 import { buildGatewayConnectionDetails, callGateway } from "../gateway/call.js";
 import { info } from "../globals.js";
 import { formatTimeAgo } from "../infra/format-time/format-relative.ts";
@@ -16,7 +16,7 @@ import {
 } from "../memory/status-format.js";
 import type { RuntimeEnv } from "../runtime.js";
 import { runSecurityAudit } from "../security/audit.js";
-import { renderTable } from "../terminal/table.js";
+import { getTerminalTableWidth, renderTable } from "../terminal/table.js";
 import { theme } from "../terminal/theme.js";
 import { formatHealthChannelLines, type HealthSummary } from "./health.js";
 import { resolveControlUiLinks } from "./onboard-helpers.js";
@@ -30,7 +30,6 @@ import {
   formatTokensCompact,
   shortenText,
 } from "./status.format.js";
-import { resolveGatewayProbeAuth } from "./status.gateway-probe.js";
 import { scanStatus } from "./status.scan.js";
 import {
   formatUpdateAvailableHint,
@@ -65,48 +64,6 @@ function resolvePairingRecoveryContext(params: {
   return { requestId: requestId || null };
 }
 
-function summarizeChannelRestartTelemetry(value: unknown): {
-  accounts: number;
-  retrying: number;
-  exhausted: number;
-  manuallyStopped: number;
-} {
-  if (!value || typeof value !== "object") {
-    return { accounts: 0, retrying: 0, exhausted: 0, manuallyStopped: 0 };
-  }
-  const channels = Object.values(value as Record<string, unknown>).filter(
-    (entry): entry is Record<string, unknown> => Boolean(entry && typeof entry === "object"),
-  );
-  const accounts = channels.flatMap((channel) => Object.values(channel));
-  let retrying = 0;
-  let exhausted = 0;
-  let manuallyStopped = 0;
-  for (const account of accounts) {
-    if (!account || typeof account !== "object") {
-      continue;
-    }
-    const attempts =
-      typeof (account as { attempts?: unknown }).attempts === "number"
-        ? ((account as { attempts: number }).attempts ?? 0)
-        : 0;
-    if (attempts > 0) {
-      retrying += 1;
-    }
-    if ((account as { exhausted?: unknown }).exhausted === true) {
-      exhausted += 1;
-    }
-    if ((account as { manuallyStopped?: unknown }).manuallyStopped === true) {
-      manuallyStopped += 1;
-    }
-  }
-  return {
-    accounts: accounts.length,
-    retrying,
-    exhausted,
-    manuallyStopped,
-  };
-}
-
 export async function statusCommand(
   opts: {
     json?: boolean;
@@ -123,33 +80,33 @@ export async function statusCommand(
     return;
   }
 
-  const [scan, securityAudit] = opts.json
-    ? await Promise.all([
-        scanStatus({ json: opts.json, timeoutMs: opts.timeoutMs, all: opts.all }, runtime),
-        runSecurityAudit({
-          config: loadConfig(),
-          deep: false,
-          includeFilesystem: true,
-          includeChannelSecurity: true,
-        }),
-      ])
-    : [
-        await scanStatus({ json: opts.json, timeoutMs: opts.timeoutMs, all: opts.all }, runtime),
-        await withProgress(
-          {
-            label: "Running security audit…",
-            indeterminate: true,
-            enabled: true,
-          },
-          async () =>
-            await runSecurityAudit({
-              config: loadConfig(),
-              deep: false,
-              includeFilesystem: true,
-              includeChannelSecurity: true,
-            }),
-        ),
-      ];
+  const scan = await scanStatus(
+    { json: opts.json, timeoutMs: opts.timeoutMs, all: opts.all },
+    runtime,
+  );
+  const securityAudit = opts.json
+    ? await runSecurityAudit({
+        config: scan.cfg,
+        sourceConfig: scan.sourceConfig,
+        deep: false,
+        includeFilesystem: true,
+        includeChannelSecurity: true,
+      })
+    : await withProgress(
+        {
+          label: "Running security audit…",
+          indeterminate: true,
+          enabled: true,
+        },
+        async () =>
+          await runSecurityAudit({
+            config: scan.cfg,
+            sourceConfig: scan.sourceConfig,
+            deep: false,
+            includeFilesystem: true,
+            includeChannelSecurity: true,
+          }),
+      );
   const {
     cfg,
     osSummary,
@@ -160,14 +117,16 @@ export async function statusCommand(
     gatewayConnection,
     remoteUrlMissing,
     gatewayMode,
+    gatewayProbeAuth,
+    gatewayProbeAuthWarning,
     gatewayProbe,
     gatewayReachable,
     gatewaySelf,
     channelIssues,
     agentStatus,
     channels,
-    channelRestartTelemetry,
     summary,
+    secretDiagnostics,
     memory,
     memoryPlugin,
   } = scan;
@@ -194,6 +153,7 @@ export async function statusCommand(
             method: "health",
             params: { probe: true },
             timeoutMs: opts.timeoutMs,
+            config: scan.cfg,
           }),
       )
     : undefined;
@@ -203,6 +163,7 @@ export async function statusCommand(
           method: "last-heartbeat",
           params: {},
           timeoutMs: opts.timeoutMs,
+          config: scan.cfg,
         }).catch(() => null)
       : null;
 
@@ -238,12 +199,13 @@ export async function statusCommand(
             connectLatencyMs: gatewayProbe?.connectLatencyMs ?? null,
             self: gatewaySelf,
             error: gatewayProbe?.error ?? null,
+            authWarning: gatewayProbeAuthWarning ?? null,
           },
           gatewayService: daemon,
           nodeService: nodeDaemon,
           agents: agentStatus,
           securityAudit,
-          channelRestartTelemetry,
+          secretDiagnostics,
           ...(health || usage || lastHeartbeat ? { health, usage, lastHeartbeat } : {}),
         },
         null,
@@ -259,7 +221,7 @@ export async function statusCommand(
   const warn = (value: string) => (rich ? theme.warn(value) : value);
 
   if (opts.verbose) {
-    const details = buildGatewayConnectionDetails();
+    const details = buildGatewayConnectionDetails({ config: scan.cfg });
     runtime.log(info("Gateway connection:"));
     for (const line of details.message.split("\n")) {
       runtime.log(`  ${line}`);
@@ -267,7 +229,15 @@ export async function statusCommand(
     runtime.log("");
   }
 
-  const tableWidth = Math.max(60, (process.stdout.columns ?? 120) - 1);
+  const tableWidth = getTerminalTableWidth();
+
+  if (secretDiagnostics.length > 0) {
+    runtime.log(theme.warn("Secret diagnostics:"));
+    for (const entry of secretDiagnostics) {
+      runtime.log(`- ${entry}`);
+    }
+    runtime.log("");
+  }
 
   const dashboard = (() => {
     const controlUiEnabled = cfg.gateway?.controlUi?.enabled ?? true;
@@ -294,7 +264,7 @@ export async function statusCommand(
         : warn(gatewayProbe?.error ? `unreachable (${gatewayProbe.error})` : "unreachable");
     const auth =
       gatewayReachable && !remoteUrlMissing
-        ? ` · auth ${formatGatewayAuthUsed(resolveGatewayProbeAuth(cfg))}`
+        ? ` · auth ${formatGatewayAuthUsed(gatewayProbeAuth)}`
         : "";
     const self =
       gatewaySelf?.host || gatewaySelf?.version || gatewaySelf?.platform
@@ -334,14 +304,14 @@ export async function statusCommand(
     if (daemon.installed === false) {
       return `${daemon.label} not installed`;
     }
-    const installedPrefix = daemon.installed === true ? "installed · " : "";
+    const installedPrefix = daemon.managedByOpenClaw ? "installed · " : "";
     return `${daemon.label} ${installedPrefix}${daemon.loadedText}${daemon.runtimeShort ? ` · ${daemon.runtimeShort}` : ""}`;
   })();
   const nodeDaemonValue = (() => {
     if (nodeDaemon.installed === false) {
       return `${nodeDaemon.label} not installed`;
     }
-    const installedPrefix = nodeDaemon.installed === true ? "installed · " : "";
+    const installedPrefix = nodeDaemon.managedByOpenClaw ? "installed · " : "";
     return `${nodeDaemon.label} ${installedPrefix}${nodeDaemon.loadedText}${nodeDaemon.runtimeShort ? ` · ${nodeDaemon.runtimeShort}` : ""}`;
   })();
 
@@ -353,11 +323,6 @@ export async function statusCommand(
     summary.queuedSystemEvents.length > 0 ? `${summary.queuedSystemEvents.length} queued` : "none";
 
   const probesValue = health ? ok("enabled") : muted("skipped (use --deep)");
-  const restartTelemetrySummary = summarizeChannelRestartTelemetry(channelRestartTelemetry);
-  const restartTelemetryValue =
-    restartTelemetrySummary.accounts === 0
-      ? muted("none")
-      : `retrying ${restartTelemetrySummary.retrying} | exhausted ${restartTelemetrySummary.exhausted} | manual ${restartTelemetrySummary.manuallyStopped}`;
 
   const heartbeatValue = (() => {
     const parts = summary.heartbeat.agents
@@ -460,11 +425,13 @@ export async function statusCommand(
       Value: updateAvailability.available ? warn(`available · ${updateLine}`) : updateLine,
     },
     { Item: "Gateway", Value: gatewayValue },
+    ...(gatewayProbeAuthWarning
+      ? [{ Item: "Gateway auth warning", Value: warn(gatewayProbeAuthWarning) }]
+      : []),
     { Item: "Gateway service", Value: daemonValue },
     { Item: "Node service", Value: nodeDaemonValue },
     { Item: "Agents", Value: agentsValue },
     { Item: "Memory", Value: memoryValue },
-    { Item: "Channel restarts", Value: restartTelemetryValue },
     { Item: "Probes", Value: probesValue },
     { Item: "Events", Value: eventsValue },
     { Item: "Heartbeat", Value: heartbeatValue },

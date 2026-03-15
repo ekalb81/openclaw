@@ -24,12 +24,13 @@ const DEFAULT_MODEL_ALIASES: Readonly<Record<string, string>> = {
   sonnet: "anthropic/claude-sonnet-4-6",
 
   // OpenAI
-  gpt: "openai/gpt-5.2",
+  gpt: "openai/gpt-5.4",
   "gpt-mini": "openai/gpt-5-mini",
 
   // Google Gemini (3.x are preview ids in the catalog)
-  gemini: "google/gemini-3-pro-preview",
+  gemini: "google/gemini-3.1-pro-preview",
   "gemini-flash": "google/gemini-3-flash-preview",
+  "gemini-flash-lite": "google/gemini-3.1-flash-lite-preview",
 };
 
 const DEFAULT_MODEL_COST: ModelDefinitionConfig["cost"] = {
@@ -177,17 +178,17 @@ export function applyTalkApiKey(config: OpenClawConfig): OpenClawConfig {
 
   const talk = normalized.talk;
   const active = resolveActiveTalkProviderConfig(talk);
-  if (active.provider && active.provider !== DEFAULT_TALK_PROVIDER) {
+  if (active?.provider && active.provider !== DEFAULT_TALK_PROVIDER) {
     return normalized;
   }
 
-  const existingProviderApiKeyConfigured = hasConfiguredSecretInput(active.config?.apiKey);
+  const existingProviderApiKeyConfigured = hasConfiguredSecretInput(active?.config?.apiKey);
   const existingLegacyApiKeyConfigured = hasConfiguredSecretInput(talk?.apiKey);
   if (existingProviderApiKeyConfigured || existingLegacyApiKeyConfigured) {
     return normalized;
   }
 
-  const providerId = active.provider ?? DEFAULT_TALK_PROVIDER;
+  const providerId = active?.provider ?? DEFAULT_TALK_PROVIDER;
   const providers = { ...talk?.providers };
   const providerConfig = { ...providers[providerId], apiKey: resolved };
   providers[providerId] = providerConfig;
@@ -410,45 +411,25 @@ export function applyContextPruningDefaults(cfg: OpenClawConfig): OpenClawConfig
   }
 
   const authMode = resolveAnthropicDefaultAuthMode(cfg);
+  if (!authMode) {
+    return cfg;
+  }
 
   let mutated = false;
   const nextDefaults = { ...defaults };
   const contextPruning = defaults.contextPruning ?? {};
   const heartbeat = defaults.heartbeat ?? {};
-  const contextPruningMode = defaults.contextPruning?.mode;
-  const pruningEnabledOrUnset =
-    contextPruningMode === undefined || contextPruningMode === "cache-ttl";
-  let nextContextPruning = contextPruning;
 
   if (defaults.contextPruning?.mode === undefined) {
-    nextContextPruning = {
-      ...nextContextPruning,
+    nextDefaults.contextPruning = {
+      ...contextPruning,
       mode: "cache-ttl",
+      ttl: defaults.contextPruning?.ttl ?? "1h",
     };
     mutated = true;
   }
 
-  if (pruningEnabledOrUnset && defaults.contextPruning?.policy === undefined) {
-    nextContextPruning = {
-      ...nextContextPruning,
-      policy: "eligible",
-    };
-    mutated = true;
-  }
-
-  if (pruningEnabledOrUnset && authMode && defaults.contextPruning?.ttl === undefined) {
-    nextContextPruning = {
-      ...nextContextPruning,
-      ttl: "1h",
-    };
-    mutated = true;
-  }
-
-  if (nextContextPruning !== contextPruning) {
-    nextDefaults.contextPruning = nextContextPruning;
-  }
-
-  if (authMode && defaults.heartbeat?.every === undefined) {
+  if (defaults.heartbeat?.every === undefined) {
     nextDefaults.heartbeat = {
       ...heartbeat,
       every: authMode === "oauth" ? "1h" : "30m",

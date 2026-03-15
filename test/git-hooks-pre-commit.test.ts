@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { copyFileSync, mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, symlinkSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
@@ -9,17 +9,6 @@ const baseGitEnv = {
   GIT_TERMINAL_PROMPT: "0",
 };
 const baseRunEnv: NodeJS.ProcessEnv = { ...process.env, ...baseGitEnv };
-const hasUsableBash = (() => {
-  try {
-    execFileSync("bash", ["-lc", "exit 0"], {
-      stdio: "ignore",
-      env: baseRunEnv,
-    });
-    return true;
-  } catch {
-    return false;
-  }
-})();
 
 const run = (cwd: string, cmd: string, args: string[] = [], env?: NodeJS.ProcessEnv) => {
   return execFileSync(cmd, args, {
@@ -31,17 +20,13 @@ const run = (cwd: string, cmd: string, args: string[] = [], env?: NodeJS.Process
 
 describe("git-hooks/pre-commit (integration)", () => {
   it("does not treat staged filenames as git-add flags (e.g. --all)", () => {
-    if (!hasUsableBash) {
-      return;
-    }
-
     const dir = mkdtempSync(path.join(os.tmpdir(), "openclaw-pre-commit-"));
     run(dir, "git", ["init", "-q", "--initial-branch=main"]);
 
     // Use the real hook script and lightweight helper stubs.
     mkdirSync(path.join(dir, "git-hooks"), { recursive: true });
     mkdirSync(path.join(dir, "scripts", "pre-commit"), { recursive: true });
-    copyFileSync(
+    symlinkSync(
       path.join(process.cwd(), "git-hooks", "pre-commit"),
       path.join(dir, "git-hooks", "pre-commit"),
     );

@@ -1,5 +1,5 @@
 import { withProgress } from "../cli/progress.js";
-import { loadConfig, resolveGatewayPort } from "../config/config.js";
+import { readBestEffortConfig, resolveGatewayPort } from "../config/config.js";
 import { probeGateway } from "../gateway/probe.js";
 import { discoverGatewayBeacons } from "../infra/bonjour-discovery.js";
 import { resolveSshConfig } from "../infra/ssh-config.js";
@@ -10,6 +10,8 @@ import { colorize, isRich, theme } from "../terminal/theme.js";
 import {
   buildNetworkHints,
   extractConfigSummary,
+  isProbeReachable,
+  isScopeLimitedProbeFailure,
   type GatewayStatusTarget,
   parseTimeoutMs,
   pickGatewaySelfPresence,
@@ -35,7 +37,7 @@ export async function gatewayStatusCommand(
   runtime: RuntimeEnv,
 ) {
   const startedAt = Date.now();
-  const cfg = loadConfig();
+  const cfg = await readBestEffortConfig();
   const rich = isRich() && opts.json !== true;
   const overallTimeoutMs = parseTimeoutMs(opts.timeout, 3000);
   const wideAreaDomain = resolveWideAreaDiscoveryDomain({
@@ -152,23 +154,31 @@ export async function gatewayStatusCommand(
       try {
         const probed = await Promise.all(
           targets.map(async (target) => {
-            const auth = resolveAuthForTarget(cfg, target, {
+            const authResolution = await resolveAuthForTarget(cfg, target, {
               token: typeof opts.token === "string" ? opts.token : undefined,
               password: typeof opts.password === "string" ? opts.password : undefined,
             });
+            const auth = {
+              token: authResolution.token,
+              password: authResolution.password,
+            };
             const timeoutMs = resolveProbeBudgetMs(overallTimeoutMs, target.kind);
             const probe = await probeGateway({
               url: target.url,
               auth,
               timeoutMs,
             });
-            const restartTelemetry = extractChannelRestartTelemetryFromStatus(probe.status);
-            const restartSummary = summarizeChannelRestartTelemetry(restartTelemetry);
             const configSummary = probe.configSnapshot
               ? extractConfigSummary(probe.configSnapshot)
               : null;
             const self = pickGatewaySelfPresence(probe.presence);
-            return { target, probe, restartTelemetry, restartSummary, configSummary, self };
+            return {
+              target,
+              probe,
+              configSummary,
+              self,
+              authDiagnostics: authResolution.diagnostics ?? [],
+            };
           }),
         );
 
@@ -185,8 +195,10 @@ export async function gatewayStatusCommand(
     },
   );
 
-  const reachable = probed.filter((p) => p.probe.ok);
+  const reachable = probed.filter((p) => isProbeReachable(p.probe));
   const ok = reachable.length > 0;
+  const degradedScopeLimited = probed.filter((p) => isScopeLimitedProbeFailure(p.probe));
+  const degraded = degradedScopeLimited.length > 0;
   const multipleGateways = reachable.length > 1;
   const primary =
     reachable.find((p) => p.target.kind === "explicit") ??
@@ -216,12 +228,33 @@ export async function gatewayStatusCommand(
       targetIds: reachable.map((p) => p.target.id),
     });
   }
+  for (const result of probed) {
+    if (result.authDiagnostics.length === 0) {
+      continue;
+    }
+    for (const diagnostic of result.authDiagnostics) {
+      warnings.push({
+        code: "auth_secretref_unresolved",
+        message: diagnostic,
+        targetIds: [result.target.id],
+      });
+    }
+  }
+  for (const result of degradedScopeLimited) {
+    warnings.push({
+      code: "probe_scope_limited",
+      message:
+        "Probe diagnostics are limited by gateway scopes (missing operator.read). Connection succeeded, but status details may be incomplete. Hint: pair device identity or use credentials with operator.read.",
+      targetIds: [result.target.id],
+    });
+  }
 
   if (opts.json) {
     runtime.log(
       JSON.stringify(
         {
           ok,
+          degraded,
           ts: Date.now(),
           durationMs: Date.now() - startedAt,
           timeoutMs: overallTimeoutMs,
@@ -254,7 +287,9 @@ export async function gatewayStatusCommand(
             active: p.target.active,
             tunnel: p.target.tunnel ?? null,
             connect: {
-              ok: p.probe.ok,
+              ok: isProbeReachable(p.probe),
+              rpcOk: p.probe.ok,
+              scopeLimited: isScopeLimitedProbeFailure(p.probe),
               latencyMs: p.probe.connectLatencyMs,
               error: p.probe.error,
               close: p.probe.close,
@@ -263,8 +298,6 @@ export async function gatewayStatusCommand(
             config: p.configSummary,
             health: p.probe.health,
             summary: p.probe.status,
-            channelRestartTelemetry: p.restartTelemetry,
-            channelRestartSummary: p.restartSummary,
             presence: p.probe.presence,
           })),
         },
@@ -339,70 +372,12 @@ export async function gatewayStatusCommand(
             : "unknown";
       runtime.log(`  ${colorize(rich, theme.info, "Wide-area discovery")}: ${wideArea}`);
     }
-    if (p.restartSummary.accounts > 0) {
-      runtime.log(
-        `  ${colorize(rich, theme.info, "Channel restarts")}: retrying ${p.restartSummary.retrying}, exhausted ${p.restartSummary.exhausted}, manual ${p.restartSummary.manuallyStopped}`,
-      );
-    }
     runtime.log("");
   }
 
   if (!ok) {
     runtime.exit(1);
   }
-}
-
-function extractChannelRestartTelemetryFromStatus(value: unknown): unknown {
-  if (!value || typeof value !== "object") {
-    return {};
-  }
-  const telemetry = (value as { channelRestartTelemetry?: unknown }).channelRestartTelemetry;
-  if (!telemetry || typeof telemetry !== "object") {
-    return {};
-  }
-  return telemetry;
-}
-
-function summarizeChannelRestartTelemetry(value: unknown): {
-  accounts: number;
-  retrying: number;
-  exhausted: number;
-  manuallyStopped: number;
-} {
-  if (!value || typeof value !== "object") {
-    return { accounts: 0, retrying: 0, exhausted: 0, manuallyStopped: 0 };
-  }
-  const channels = Object.values(value as Record<string, unknown>).filter(
-    (entry): entry is Record<string, unknown> => Boolean(entry && typeof entry === "object"),
-  );
-  const accounts = channels.flatMap((channel) => Object.values(channel));
-  let retrying = 0;
-  let exhausted = 0;
-  let manuallyStopped = 0;
-  for (const account of accounts) {
-    if (!account || typeof account !== "object") {
-      continue;
-    }
-    const attempts =
-      typeof (account as { attempts?: unknown }).attempts === "number"
-        ? ((account as { attempts: number }).attempts ?? 0)
-        : 0;
-    if (attempts > 0) {
-      retrying += 1;
-    }
-    if ((account as { exhausted?: unknown }).exhausted === true) {
-      exhausted += 1;
-    }
-    if ((account as { manuallyStopped?: unknown }).manuallyStopped === true) {
-      manuallyStopped += 1;
-    }
-  }
-  return {
-    accounts: accounts.length,
-    retrying,
-    exhausted,
-    manuallyStopped,
-  };
 }
 
 function inferSshTargetFromRemoteUrl(rawUrl?: string | null): string | null {

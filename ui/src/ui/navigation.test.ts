@@ -1,5 +1,4 @@
-import { beforeEach, describe, expect, it } from "vitest";
-import { i18n } from "../i18n/index.ts";
+import { describe, expect, it } from "vitest";
 import {
   TAB_GROUPS,
   iconForTab,
@@ -15,10 +14,6 @@ import {
 
 /** All valid tab identifiers derived from TAB_GROUPS */
 const ALL_TABS: Tab[] = TAB_GROUPS.flatMap((group) => group.tabs) as Tab[];
-
-beforeEach(async () => {
-  await i18n.setLocale("en");
-});
 
 describe("iconForTab", () => {
   it("returns a non-empty string for every tab", () => {
@@ -76,7 +71,7 @@ describe("subtitleForTab", () => {
   });
 
   it("returns descriptive subtitles", () => {
-    expect(subtitleForTab("chat")).toContain("chat session");
+    expect(subtitleForTab("chat")).toContain("quick interventions");
     expect(subtitleForTab("config")).toContain("openclaw.json");
   });
 });

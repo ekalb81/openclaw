@@ -24,6 +24,36 @@ Compaction **persists** in the session’s JSONL history.
 Use the `agents.defaults.compaction` setting in your `openclaw.json` to configure compaction behavior (mode, target tokens, etc.).
 Compaction summarization preserves opaque identifiers by default (`identifierPolicy: "strict"`). You can override this with `identifierPolicy: "off"` or provide custom text with `identifierPolicy: "custom"` and `identifierInstructions`.
 
+You can optionally specify a different model for compaction summarization via `agents.defaults.compaction.model`. This is useful when your primary model is a local or small model and you want compaction summaries produced by a more capable model. The override accepts any `provider/model-id` string:
+
+```json
+{
+  "agents": {
+    "defaults": {
+      "compaction": {
+        "model": "openrouter/anthropic/claude-sonnet-4-5"
+      }
+    }
+  }
+}
+```
+
+This also works with local models, for example a second Ollama model dedicated to summarization or a fine-tuned compaction specialist:
+
+```json
+{
+  "agents": {
+    "defaults": {
+      "compaction": {
+        "model": "ollama/llama3.1:8b"
+      }
+    }
+  }
+}
+```
+
+When unset, compaction uses the agent's primary model.
+
 ## Auto-compaction (default on)
 
 When a session nears or exceeds the model’s context window, OpenClaw triggers auto-compaction and may retry the original request using the compacted context.
@@ -52,36 +82,8 @@ Context window is model-specific. OpenClaw uses the model definition from the co
 
 - **Compaction**: summarises and **persists** in JSONL.
 - **Session pruning**: trims old **tool results** only, **in-memory**, per request.
-- **Tool-result context compaction**: summarizes stale tool outputs in-memory before a prompt is sent.
 
 See [/concepts/session-pruning](/concepts/session-pruning) for pruning details.
-
-## Tool-result context compaction
-
-OpenClaw now summarizes stale tool outputs before dispatching the next prompt. This keeps
-raw tool payloads in the transcript for debugging, while reducing prompt footprint in active
-context.
-
-Defaults (`agents.defaults.compaction.toolResultContext`):
-
-- `enabled: true`
-- `maxToolPayloadChars: 24000`
-- `summaryAfterTurns: 2`
-- `maxToolMessagesInContext: 8`
-
-Disable with:
-
-```json5
-{
-  agents: {
-    defaults: {
-      compaction: {
-        toolResultContext: { enabled: false },
-      },
-    },
-  },
-}
-```
 
 ## OpenAI server-side compaction
 

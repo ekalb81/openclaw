@@ -35,14 +35,15 @@ function buildContextPruningFactory(params: {
   model: Model<Api> | undefined;
 }): ExtensionFactory | undefined {
   const raw = params.cfg?.agents?.defaults?.contextPruning;
-  const settings = computeEffectiveSettings(raw);
-  if (!settings) {
+  if (raw?.mode !== "cache-ttl") {
     return undefined;
   }
-  if (
-    settings.policy === "eligible" &&
-    !isCacheTtlEligibleProvider(params.provider, params.modelId)
-  ) {
+  if (!isCacheTtlEligibleProvider(params.provider, params.modelId)) {
+    return undefined;
+  }
+
+  const settings = computeEffectiveSettings(raw);
+  if (!settings) {
     return undefined;
   }
 
@@ -70,6 +71,7 @@ export function buildEmbeddedExtensionFactories(params: {
   const factories: ExtensionFactory[] = [];
   if (resolveCompactionMode(params.cfg) === "safeguard") {
     const compactionCfg = params.cfg?.agents?.defaults?.compaction;
+    const qualityGuardCfg = compactionCfg?.qualityGuard;
     const contextWindowInfo = resolveContextWindowInfo({
       cfg: params.cfg,
       provider: params.provider,
@@ -82,7 +84,11 @@ export function buildEmbeddedExtensionFactories(params: {
       contextWindowTokens: contextWindowInfo.tokens,
       identifierPolicy: compactionCfg?.identifierPolicy,
       identifierInstructions: compactionCfg?.identifierInstructions,
+      customInstructions: compactionCfg?.customInstructions,
+      qualityGuardEnabled: qualityGuardCfg?.enabled ?? false,
+      qualityGuardMaxRetries: qualityGuardCfg?.maxRetries,
       model: params.model,
+      recentTurnsPreserve: compactionCfg?.recentTurnsPreserve,
     });
     factories.push(compactionSafeguardExtension);
   }

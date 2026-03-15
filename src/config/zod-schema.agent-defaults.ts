@@ -14,39 +14,6 @@ import {
   TypingModeSchema,
 } from "./zod-schema.core.js";
 
-const PromptBudgetSchema = z
-  .object({
-    enabled: z.boolean().optional(),
-    profile: z.string().optional(),
-    profiles: z
-      .record(
-        z.string(),
-        z
-          .object({
-            charsPerToken: z.number().positive().optional(),
-            imageTokens: z.number().int().nonnegative().optional(),
-            softLimitRatio: z.number().min(0).max(1).optional(),
-            hardLimitRatio: z.number().min(0).max(1).optional(),
-            softAction: z
-              .union([z.literal("warn"), z.literal("trim"), z.literal("summarize")])
-              .optional(),
-            hardAction: z
-              .union([z.literal("trim"), z.literal("summarize"), z.literal("block")])
-              .optional(),
-          })
-          .strict(),
-      )
-      .optional(),
-    charsPerToken: z.number().positive().optional(),
-    imageTokens: z.number().int().nonnegative().optional(),
-    softLimitRatio: z.number().min(0).max(1).optional(),
-    hardLimitRatio: z.number().min(0).max(1).optional(),
-    softAction: z.union([z.literal("warn"), z.literal("trim"), z.literal("summarize")]).optional(),
-    hardAction: z.union([z.literal("trim"), z.literal("summarize"), z.literal("block")]).optional(),
-  })
-  .strict()
-  .optional();
-
 export const AgentDefaultsSchema = z
   .object({
     model: AgentModelSchema.optional(),
@@ -64,7 +31,6 @@ export const AgentDefaultsSchema = z
             params: z.record(z.string(), z.unknown()).optional(),
             /** Enable streaming for this model (default: true, false for Ollama to avoid SDK issue #1205). */
             streaming: z.boolean().optional(),
-            promptBudget: PromptBudgetSchema,
           })
           .strict(),
       )
@@ -83,46 +49,11 @@ export const AgentDefaultsSchema = z
     envelopeTimestamp: z.union([z.literal("on"), z.literal("off")]).optional(),
     envelopeElapsed: z.union([z.literal("on"), z.literal("off")]).optional(),
     contextTokens: z.number().int().positive().optional(),
-    promptBudget: PromptBudgetSchema,
-    modelRouting: z
-      .object({
-        enabled: z.boolean().optional(),
-        tier: z
-          .union([z.literal("economy"), z.literal("balanced"), z.literal("premium")])
-          .optional(),
-        tierOrder: z
-          .array(z.union([z.literal("economy"), z.literal("balanced"), z.literal("premium")]))
-          .optional(),
-        tiers: z
-          .object({
-            economy: AgentModelSchema.optional(),
-            balanced: AgentModelSchema.optional(),
-            premium: AgentModelSchema.optional(),
-          })
-          .strict()
-          .optional(),
-        openRouter: z
-          .object({
-            providerByTier: z
-              .object({
-                economy: z.record(z.string(), z.unknown()).optional(),
-                balanced: z.record(z.string(), z.unknown()).optional(),
-                premium: z.record(z.string(), z.unknown()).optional(),
-              })
-              .strict()
-              .optional(),
-          })
-          .strict()
-          .optional(),
-      })
-      .strict()
-      .optional(),
     cliBackends: z.record(z.string(), CliBackendSchema).optional(),
     memorySearch: MemorySearchSchema,
     contextPruning: z
       .object({
         mode: z.union([z.literal("off"), z.literal("cache-ttl")]).optional(),
-        policy: z.union([z.literal("eligible"), z.literal("all")]).optional(),
         ttl: z.string().optional(),
         keepLastAssistants: z.number().int().nonnegative().optional(),
         softTrimRatio: z.number().min(0).max(1).optional(),
@@ -160,19 +91,23 @@ export const AgentDefaultsSchema = z
         keepRecentTokens: z.number().int().positive().optional(),
         reserveTokensFloor: z.number().int().nonnegative().optional(),
         maxHistoryShare: z.number().min(0.1).max(0.9).optional(),
+        customInstructions: z.string().optional(),
         identifierPolicy: z
           .union([z.literal("strict"), z.literal("off"), z.literal("custom")])
           .optional(),
         identifierInstructions: z.string().optional(),
-        toolResultContext: z
+        recentTurnsPreserve: z.number().int().min(0).max(12).optional(),
+        qualityGuard: z
           .object({
             enabled: z.boolean().optional(),
-            maxToolPayloadChars: z.number().int().positive().optional(),
-            summaryAfterTurns: z.number().int().nonnegative().optional(),
-            maxToolMessagesInContext: z.number().int().positive().optional(),
+            maxRetries: z.number().int().nonnegative().optional(),
           })
           .strict()
           .optional(),
+        postIndexSync: z.enum(["off", "async", "await"]).optional(),
+        postCompactionSections: z.array(z.string()).optional(),
+        model: z.string().optional(),
+        timeoutSeconds: z.number().int().positive().optional(),
         memoryFlush: z
           .object({
             enabled: z.boolean().optional(),

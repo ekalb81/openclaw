@@ -27,19 +27,11 @@ export const healthHandlers: GatewayRequestHandlers = {
       respond(false, undefined, errorShape(ErrorCodes.UNAVAILABLE, formatForLog(err)));
     }
   },
-  status: async ({ respond, client, context }) => {
+  status: async ({ respond, client }) => {
     const scopes = Array.isArray(client?.connect?.scopes) ? client.connect.scopes : [];
     const status = await getStatusSummary({
       includeSensitive: scopes.includes(ADMIN_SCOPE),
     });
-    const merged = {
-      ...status,
-      channelRestartTelemetry:
-        context?.getRuntimeSnapshot?.().restartTelemetry ??
-        // `context` is optional in tests and older call paths.
-        // Fall back to an empty map if runtime snapshot access is unavailable.
-        {},
-    };
-    respond(true, merged, undefined);
+    respond(true, status, undefined);
   },
 };

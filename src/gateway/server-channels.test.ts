@@ -1,6 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { type ChannelId, type ChannelPlugin } from "../channels/plugins/types.js";
-import type { OpenClawConfig } from "../config/config.js";
 import {
   createSubsystemLogger,
   type SubsystemLogger,
@@ -42,24 +41,17 @@ type TestAccount = {
 };
 
 function createTestPlugin(params?: {
-  id?: ChannelId;
   account?: TestAccount;
-  isConfigured?: (resolved: TestAccount) => boolean | Promise<boolean>;
   startAccount?: NonNullable<ChannelPlugin<TestAccount>["gateway"]>["startAccount"];
   includeDescribeAccount?: boolean;
+  resolveAccount?: ChannelPlugin<TestAccount>["config"]["resolveAccount"];
 }): ChannelPlugin<TestAccount> {
-  const id = params?.id ?? "discord";
   const account = params?.account ?? { enabled: true, configured: true };
   const includeDescribeAccount = params?.includeDescribeAccount !== false;
   const config: ChannelPlugin<TestAccount>["config"] = {
     listAccountIds: () => [DEFAULT_ACCOUNT_ID],
-    resolveAccount: () => account,
+    resolveAccount: params?.resolveAccount ?? (() => account),
     isEnabled: (resolved) => resolved.enabled !== false,
-    ...(params?.isConfigured
-      ? {
-          isConfigured: (resolved) => params.isConfigured!(resolved),
-        }
-      : {}),
   };
   if (includeDescribeAccount) {
     config.describeAccount = (resolved) => ({
@@ -73,12 +65,12 @@ function createTestPlugin(params?: {
     gateway.startAccount = params.startAccount;
   }
   return {
-    id,
+    id: "discord",
     meta: {
-      id,
-      label: id[0].toUpperCase() + id.slice(1),
-      selectionLabel: id[0].toUpperCase() + id.slice(1),
-      docsPath: `/channels/${id}`,
+      id: "discord",
+      label: "Discord",
+      selectionLabel: "Discord",
+      docsPath: "/channels/discord",
       blurb: "test stub",
     },
     capabilities: { chatTypes: ["direct"] },
@@ -87,50 +79,30 @@ function createTestPlugin(params?: {
   };
 }
 
-function installTestRegistry(...plugins: ChannelPlugin<TestAccount>[]) {
+function installTestRegistry(plugin: ChannelPlugin<TestAccount>) {
   const registry = createEmptyPluginRegistry();
-  for (const plugin of plugins) {
-    registry.channels.push({
-      pluginId: plugin.id,
-      source: "test",
-      plugin,
-    });
-  }
+  registry.channels.push({
+    pluginId: plugin.id,
+    source: "test",
+    plugin,
+  });
   setActivePluginRegistry(registry);
 }
 
 function createManager(options?: {
   channelRuntime?: PluginRuntime["channel"];
-  config?: OpenClawConfig;
+  loadConfig?: () => Record<string, unknown>;
 }) {
   const log = createSubsystemLogger("gateway/server-channels-test");
-  const channelLogs = {
-    discord: log,
-    telegram: log.child("telegram"),
-    signal: log.child("signal"),
-  } as Record<ChannelId, SubsystemLogger>;
+  const channelLogs = { discord: log } as Record<ChannelId, SubsystemLogger>;
   const runtime = runtimeForLogger(log);
-  const channelRuntimeEnvs = {
-    discord: runtime,
-    telegram: runtime,
-    signal: runtime,
-  } as Record<ChannelId, RuntimeEnv>;
+  const channelRuntimeEnvs = { discord: runtime } as Record<ChannelId, RuntimeEnv>;
   return createChannelManager({
-    loadConfig: () => options?.config ?? {},
+    loadConfig: () => options?.loadConfig?.() ?? {},
     channelLogs,
     channelRuntimeEnvs,
     ...(options?.channelRuntime ? { channelRuntime: options.channelRuntime } : {}),
   });
-}
-
-function createDeferred<T>() {
-  let resolve!: (value: T) => void;
-  let reject!: (reason?: unknown) => void;
-  const promise = new Promise<T>((res, rej) => {
-    resolve = res;
-    reject = rej;
-  });
-  return { promise, resolve, reject };
 }
 
 describe("server-channels auto restart", () => {
@@ -165,13 +137,6 @@ describe("server-channels auto restart", () => {
     const account = snapshot.channelAccounts.discord?.[DEFAULT_ACCOUNT_ID];
     expect(account?.running).toBe(false);
     expect(account?.reconnectAttempts).toBe(10);
-    expect(snapshot.restartTelemetry?.discord?.[DEFAULT_ACCOUNT_ID]).toEqual({
-      accountId: DEFAULT_ACCOUNT_ID,
-      attempts: 10,
-      maxAttempts: 10,
-      exhausted: true,
-      manuallyStopped: false,
-    });
 
     await vi.advanceTimersByTimeAsync(200);
     expect(startAccount).toHaveBeenCalledTimes(11);
@@ -192,16 +157,6 @@ describe("server-channels auto restart", () => {
 
     await vi.advanceTimersByTimeAsync(200);
     expect(startAccount).toHaveBeenCalledTimes(1);
-    const telemetry = manager.getRuntimeSnapshot().restartTelemetry?.discord?.[DEFAULT_ACCOUNT_ID];
-    expect(telemetry).toEqual(
-      expect.objectContaining({
-        accountId: DEFAULT_ACCOUNT_ID,
-        maxAttempts: 10,
-        exhausted: false,
-        manuallyStopped: true,
-      }),
-    );
-    expect(typeof telemetry?.attempts).toBe("number");
   });
 
   it("marks enabled/configured when account descriptors omit them", () => {
@@ -230,87 +185,145 @@ describe("server-channels auto restart", () => {
     expect(startAccount).toHaveBeenCalledTimes(1);
   });
 
-  it("starts channels with bounded startup concurrency", async () => {
-    const gates = {
-      discord: createDeferred<boolean>(),
-      telegram: createDeferred<boolean>(),
-      signal: createDeferred<boolean>(),
-    };
-    const inFlight = new Set<ChannelId>();
-    let peakConcurrent = 0;
-
-    const makePlugin = (id: "discord" | "telegram" | "signal") =>
-      createTestPlugin({
-        id,
-        isConfigured: async () => {
-          inFlight.add(id);
-          peakConcurrent = Math.max(peakConcurrent, inFlight.size);
-          const result = await gates[id].promise;
-          inFlight.delete(id);
-          return result;
-        },
-        startAccount: vi.fn(async () => {}),
-      });
-
-    installTestRegistry(makePlugin("discord"), makePlugin("telegram"), makePlugin("signal"));
-    const manager = createManager({
-      config: {
-        gateway: {
-          channelStartupConcurrency: 2,
-        },
-      },
-    });
-
-    const startup = manager.startChannels();
-    await vi.waitFor(
-      () => {
-        expect(inFlight.size).toBe(2);
-      },
-      { timeout: 250, interval: 2 },
-    );
-
-    gates.discord.resolve(true);
-    await vi.waitFor(
-      () => {
-        expect(inFlight.has("signal")).toBe(true);
-      },
-      { timeout: 250, interval: 2 },
-    );
-
-    gates.telegram.resolve(true);
-    gates.signal.resolve(true);
-    await startup;
-
-    expect(peakConcurrent).toBe(2);
-  });
-
-  it("continues startup for other channels when one channel fails", async () => {
-    const startDiscord = vi.fn(async () => {});
-    const startTelegram = vi.fn(async () => {});
+  it("reuses plugin account resolution for health monitor overrides", () => {
     installTestRegistry(
       createTestPlugin({
-        id: "discord",
-        isConfigured: async () => {
-          throw new Error("discord bootstrap failed");
+        resolveAccount: (cfg, accountId) => {
+          const accounts = (
+            cfg as {
+              channels?: {
+                discord?: {
+                  accounts?: Record<
+                    string,
+                    TestAccount & { healthMonitor?: { enabled?: boolean } }
+                  >;
+                };
+              };
+            }
+          ).channels?.discord?.accounts;
+          if (!accounts) {
+            return { enabled: true, configured: true };
+          }
+          const direct = accounts[accountId ?? DEFAULT_ACCOUNT_ID];
+          if (direct) {
+            return direct;
+          }
+          const normalized = (accountId ?? DEFAULT_ACCOUNT_ID).toLowerCase().replaceAll(" ", "-");
+          const matchKey = Object.keys(accounts).find(
+            (key) => key.toLowerCase().replaceAll(" ", "-") === normalized,
+          );
+          return matchKey ? (accounts[matchKey] ?? { enabled: true, configured: true }) : {};
         },
-        startAccount: startDiscord,
-      }),
-      createTestPlugin({
-        id: "telegram",
-        startAccount: startTelegram,
       }),
     );
 
     const manager = createManager({
-      config: {
-        gateway: {
-          channelStartupConcurrency: 2,
+      loadConfig: () => ({
+        channels: {
+          discord: {
+            accounts: {
+              "Router D": {
+                enabled: true,
+                configured: true,
+                healthMonitor: { enabled: false },
+              },
+            },
+          },
         },
-      },
+      }),
     });
 
-    await expect(manager.startChannels()).rejects.toThrow(/discord bootstrap failed/);
-    expect(startDiscord).not.toHaveBeenCalled();
-    expect(startTelegram).toHaveBeenCalledTimes(1);
+    expect(manager.isHealthMonitorEnabled("discord", "router-d")).toBe(false);
+  });
+
+  it("falls back to channel-level health monitor overrides when account resolution omits them", () => {
+    installTestRegistry(
+      createTestPlugin({
+        resolveAccount: () => ({
+          enabled: true,
+          configured: true,
+        }),
+      }),
+    );
+
+    const manager = createManager({
+      loadConfig: () => ({
+        channels: {
+          discord: {
+            healthMonitor: { enabled: false },
+          },
+        },
+      }),
+    });
+
+    expect(manager.isHealthMonitorEnabled("discord", DEFAULT_ACCOUNT_ID)).toBe(false);
+  });
+
+  it("uses raw account config overrides when resolvers omit health monitor fields", () => {
+    installTestRegistry(
+      createTestPlugin({
+        resolveAccount: () => ({
+          enabled: true,
+          configured: true,
+        }),
+      }),
+    );
+
+    const manager = createManager({
+      loadConfig: () => ({
+        channels: {
+          discord: {
+            accounts: {
+              [DEFAULT_ACCOUNT_ID]: {
+                healthMonitor: { enabled: false },
+              },
+            },
+          },
+        },
+      }),
+    });
+
+    expect(manager.isHealthMonitorEnabled("discord", DEFAULT_ACCOUNT_ID)).toBe(false);
+  });
+
+  it("fails closed when account resolution throws during health monitor gating", () => {
+    installTestRegistry(
+      createTestPlugin({
+        resolveAccount: () => {
+          throw new Error("unresolved SecretRef");
+        },
+      }),
+    );
+
+    const manager = createManager();
+
+    expect(manager.isHealthMonitorEnabled("discord", DEFAULT_ACCOUNT_ID)).toBe(false);
+  });
+
+  it("does not treat an empty account id as the default account when matching raw overrides", () => {
+    installTestRegistry(
+      createTestPlugin({
+        resolveAccount: () => ({
+          enabled: true,
+          configured: true,
+        }),
+      }),
+    );
+
+    const manager = createManager({
+      loadConfig: () => ({
+        channels: {
+          discord: {
+            accounts: {
+              default: {
+                healthMonitor: { enabled: false },
+              },
+            },
+          },
+        },
+      }),
+    });
+
+    expect(manager.isHealthMonitorEnabled("discord", "")).toBe(true);
   });
 });

@@ -31,8 +31,6 @@ Sandboxing details: [Sandboxing](/gateway/sandboxing)
 - If running on a VPS/public host, review
   [Security hardening for network exposure](/gateway/security#04-network-exposure-bind--port--firewall),
   especially Docker `DOCKER-USER` firewall policy.
-- For bind/auth/proxy choices across deployment shapes, use the consolidated
-  [Deployment hardening matrix](/gateway/deployment-hardening).
 
 ## Containerized Gateway (Docker Compose)
 
@@ -62,6 +60,7 @@ Optional env vars:
 
 - `OPENCLAW_IMAGE` — use a remote image instead of building locally (e.g. `ghcr.io/openclaw/openclaw:latest`)
 - `OPENCLAW_DOCKER_APT_PACKAGES` — install extra apt packages during build
+- `OPENCLAW_EXTENSIONS` — pre-install extension dependencies at build time (space-separated extension names, e.g. `diagnostics-otel matrix`)
 - `OPENCLAW_EXTRA_MOUNTS` — add extra host bind mounts
 - `OPENCLAW_HOME_VOLUME` — persist `/home/node` in a named volume
 - `OPENCLAW_SANDBOX` — opt in to Docker gateway sandbox bootstrap. Only explicit truthy values enable it: `1`, `true`, `yes`, `on`
@@ -166,12 +165,13 @@ Common tags:
 
 The main Docker image currently uses:
 
-- `node:22-bookworm`
+- `node:24-bookworm`
 
-The docker image now publishes OCI base-image annotations (sha256 is an example):
+The docker image now publishes OCI base-image annotations (sha256 is an example,
+and points at the pinned multi-arch manifest list for that tag):
 
-- `org.opencontainers.image.base.name=docker.io/library/node:22-bookworm`
-- `org.opencontainers.image.base.digest=sha256:cd7bcd2e7a1e6f72052feb023c7f6b722205d3fcab7bbcbd2d1bfdab10b1e935`
+- `org.opencontainers.image.base.name=docker.io/library/node:24-bookworm`
+- `org.opencontainers.image.base.digest=sha256:3a09aa6354567619221ef6c45a5051b671f953f0a1924d1f819ffb236e520e6b`
 - `org.opencontainers.image.source=https://github.com/openclaw/openclaw`
 - `org.opencontainers.image.url=https://openclaw.ai`
 - `org.opencontainers.image.documentation=https://docs.openclaw.ai/install/docker`
@@ -322,6 +322,31 @@ Notes:
 - If you change `OPENCLAW_DOCKER_APT_PACKAGES`, rerun `docker-setup.sh` to rebuild
   the image.
 
+### Pre-install extension dependencies (optional)
+
+Extensions with their own `package.json` (e.g. `diagnostics-otel`, `matrix`,
+`msteams`) install their npm dependencies on first load. To bake those
+dependencies into the image instead, set `OPENCLAW_EXTENSIONS` before
+running `docker-setup.sh`:
+
+```bash
+export OPENCLAW_EXTENSIONS="diagnostics-otel matrix"
+./docker-setup.sh
+```
+
+Or when building directly:
+
+```bash
+docker build --build-arg OPENCLAW_EXTENSIONS="diagnostics-otel matrix" .
+```
+
+Notes:
+
+- This accepts a space-separated list of extension directory names (under `extensions/`).
+- Only extensions with a `package.json` are affected; lightweight plugins without one are ignored.
+- If you change `OPENCLAW_EXTENSIONS`, rerun `docker-setup.sh` to rebuild
+  the image.
+
 ### Power-user / full-featured container (opt-in)
 
 The default Docker image is **security-first** and runs as the non-root `node`
@@ -383,24 +408,11 @@ To speed up rebuilds, order your Dockerfile so dependency layers are cached.
 This avoids re-running `pnpm install` unless lockfiles change:
 
 ```dockerfile
-FROM node:22-bookworm
+FROM node:24-bookworm
 
-# Install Bun (required for build scripts) with checksum verification
-ARG OPENCLAW_BUN_VERSION="1.2.0"
-RUN set -eux; \
-    apt-get update; \
-    DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends ca-certificates curl unzip; \
-    arch="$(dpkg --print-architecture)"; \
-    case "$arch" in amd64) bun_arch="x64" ;; arm64) bun_arch="aarch64" ;; *) exit 1 ;; esac; \
-    bun_asset="bun-linux-${bun_arch}.zip"; \
-    curl -fsSL "https://github.com/oven-sh/bun/releases/download/bun-v${OPENCLAW_BUN_VERSION}/${bun_asset}" -o /tmp/bun.zip; \
-    curl -fsSL "https://github.com/oven-sh/bun/releases/download/bun-v${OPENCLAW_BUN_VERSION}/SHASUMS256.txt" -o /tmp/SHASUMS256.txt; \
-    expected="$(awk -v asset="$bun_asset" '$2 == asset { print $1; exit }' /tmp/SHASUMS256.txt)"; \
-    actual="$(sha256sum /tmp/bun.zip | awk '{print $1}')"; \
-    [ -n "$expected" ] && [ "$actual" = "$expected" ]; \
-    unzip -q /tmp/bun.zip -d /tmp; \
-    install -m 0755 "/tmp/bun-linux-${bun_arch}/bun" /usr/local/bin/bun; \
-    rm -rf /tmp/bun.zip /tmp/SHASUMS256.txt "/tmp/bun-linux-${bun_arch}" /var/lib/apt/lists/*
+# Install Bun (required for build scripts)
+RUN curl -fsSL https://bun.sh/install | bash
+ENV PATH="/root/.bun/bin:${PATH}"
 
 RUN corepack enable
 
@@ -465,6 +477,10 @@ curl -fsS http://127.0.0.1:18789/readyz
 
 Aliases: `/health` and `/ready`.
 
+`/healthz` is a shallow liveness probe for "the gateway process is up".
+`/readyz` stays ready during startup grace, then becomes `503` only if required
+managed channels are still disconnected after grace or disconnect later.
+
 The Docker image includes a built-in `HEALTHCHECK` that pings `/healthz` in the
 background. In plain terms: Docker keeps checking if OpenClaw is still
 responsive. If checks keep failing, Docker marks the container as `unhealthy`,
@@ -519,6 +535,12 @@ docker compose run --rm openclaw-cli devices list --url ws://127.0.0.1:18789
 - Gateway bind defaults to `lan` for container use (`OPENCLAW_GATEWAY_BIND`).
 - Dockerfile CMD uses `--allow-unconfigured`; mounted config with `gateway.mode` not `local` will still start. Override CMD to enforce the guard.
 - The gateway container is the source of truth for sessions (`~/.openclaw/agents/<agentId>/sessions/`).
+
+### Storage model
+
+- **Persistent host data:** Docker Compose bind-mounts `OPENCLAW_CONFIG_DIR` to `/home/node/.openclaw` and `OPENCLAW_WORKSPACE_DIR` to `/home/node/.openclaw/workspace`, so those paths survive container replacement.
+- **Ephemeral sandbox tmpfs:** when `agents.defaults.sandbox` is enabled, the sandbox containers use `tmpfs` for `/tmp`, `/var/tmp`, and `/run`. Those mounts are separate from the top-level Compose stack and disappear with the sandbox container.
+- **Disk growth hotspots:** watch `media/`, `agents/<agentId>/sessions/sessions.json`, transcript JSONL files, `cron/runs/*.jsonl`, and rolling file logs under `/tmp/openclaw/` (or your configured `logging.file`). If you also run the macOS app outside Docker, its service logs are separate again: `~/.openclaw/logs/gateway.log`, `~/.openclaw/logs/gateway.err.log`, and `/tmp/openclaw/openclaw-gateway.log`.
 
 ## Agent Sandbox (host gateway + Docker tools)
 

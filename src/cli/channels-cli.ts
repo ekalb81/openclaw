@@ -1,14 +1,4 @@
 import type { Command } from "commander";
-import {
-  channelsAddCommand,
-  channelsCapabilitiesCommand,
-  channelsListCommand,
-  channelsLogsCommand,
-  channelsRemoveCommand,
-  channelsRouteCommand,
-  channelsResolveCommand,
-  channelsStatusCommand,
-} from "../commands/channels.js";
 import { danger } from "../globals.js";
 import { defaultRuntime } from "../runtime.js";
 import { formatDocsLink } from "../terminal/links.js";
@@ -68,10 +58,6 @@ function runChannelsCommandWithDanger(action: () => Promise<void>, label: string
   });
 }
 
-function collectOptionValues(value: string, previous: string[]): string[] {
-  return [...previous, value];
-}
-
 export function registerChannelsCli(program: Command) {
   const channelNames = formatCliChannelOptions();
   const channels = program
@@ -101,6 +87,7 @@ export function registerChannelsCli(program: Command) {
     .option("--json", "Output JSON", false)
     .action(async (opts) => {
       await runChannelsCommand(async () => {
+        const { channelsListCommand } = await import("../commands/channels.js");
         await channelsListCommand(opts, defaultRuntime);
       });
     });
@@ -113,6 +100,7 @@ export function registerChannelsCli(program: Command) {
     .option("--json", "Output JSON", false)
     .action(async (opts) => {
       await runChannelsCommand(async () => {
+        const { channelsStatusCommand } = await import("../commands/channels.js");
         await channelsStatusCommand(opts, defaultRuntime);
       });
     });
@@ -127,6 +115,7 @@ export function registerChannelsCli(program: Command) {
     .option("--json", "Output JSON", false)
     .action(async (opts) => {
       await runChannelsCommand(async () => {
+        const { channelsCapabilitiesCommand } = await import("../commands/channels.js");
         await channelsCapabilitiesCommand(opts, defaultRuntime);
       });
     });
@@ -141,6 +130,7 @@ export function registerChannelsCli(program: Command) {
     .option("--json", "Output JSON", false)
     .action(async (entries, opts) => {
       await runChannelsCommand(async () => {
+        const { channelsResolveCommand } = await import("../commands/channels.js");
         await channelsResolveCommand(
           {
             channel: opts.channel as string | undefined,
@@ -155,28 +145,6 @@ export function registerChannelsCli(program: Command) {
     });
 
   channels
-    .command("route")
-    .description("Inspect route resolution for synthetic inbound channel context")
-    .option("--channel <name>", `Channel (${channelNames})`)
-    .option("--account <id>", "Account id (default when omitted)")
-    .option("--peer-kind <kind>", "Peer kind (direct|group|channel)", "direct")
-    .option("--peer <id>", "Peer id")
-    .option("--parent-peer-kind <kind>", "Parent peer kind (direct|group|channel)", "channel")
-    .option("--parent-peer <id>", "Parent peer id (for thread/child routing fallback)")
-    .option("--guild-id <id>", "Guild id (Discord)")
-    .option("--team-id <id>", "Team/workspace id (Slack/Teams)")
-    .option("--role <id>", "Role id (repeat or comma-separate)", collectOptionValues, [])
-    .option("--thread-id <id>", "Thread/topic id for derived thread session key")
-    .option("--thread-suffix", "Append :thread:<id> suffix in derived thread key", true)
-    .option("--no-thread-suffix", "Disable thread suffix; keep base session key")
-    .option("--json", "Output JSON", false)
-    .action(async (opts) => {
-      await runChannelsCommand(async () => {
-        await channelsRouteCommand(opts, defaultRuntime);
-      });
-    });
-
-  channels
     .command("logs")
     .description("Show recent channel logs from the gateway log file")
     .option("--channel <name>", `Channel (${formatCliChannelOptions(["all"])})`, "all")
@@ -184,6 +152,7 @@ export function registerChannelsCli(program: Command) {
     .option("--json", "Output JSON", false)
     .action(async (opts) => {
       await runChannelsCommand(async () => {
+        const { channelsLogsCommand } = await import("../commands/channels.js");
         await channelsLogsCommand(opts, defaultRuntime);
       });
     });
@@ -227,6 +196,7 @@ export function registerChannelsCli(program: Command) {
     .option("--use-env", "Use env token (default account only)", false)
     .action(async (opts, command) => {
       await runChannelsCommand(async () => {
+        const { channelsAddCommand } = await import("../commands/channels.js");
         const hasFlags = hasExplicitOptions(command, optionNamesAdd);
         await channelsAddCommand(opts, defaultRuntime, { hasFlags });
       });
@@ -240,6 +210,7 @@ export function registerChannelsCli(program: Command) {
     .option("--delete", "Delete config entries (no prompt)", false)
     .action(async (opts, command) => {
       await runChannelsCommand(async () => {
+        const { channelsRemoveCommand } = await import("../commands/channels.js");
         const hasFlags = hasExplicitOptions(command, optionNamesRemove);
         await channelsRemoveCommand(opts, defaultRuntime, { hasFlags });
       });

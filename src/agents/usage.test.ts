@@ -4,7 +4,6 @@ import {
   hasNonzeroUsage,
   derivePromptTokens,
   deriveSessionTotalTokens,
-  normalizePromptFootprintTelemetry,
 } from "./usage.js";
 
 describe("normalizeUsage", () => {
@@ -206,41 +205,5 @@ describe("deriveSessionTotalTokens", () => {
       promptTokens: 2500, // Override
     });
     expect(totalTokens).toBe(2500);
-  });
-});
-
-describe("normalizePromptFootprintTelemetry", () => {
-  it("normalizes profile/flags/tokens from prompt footprint custom payload", () => {
-    const telemetry = normalizePromptFootprintTelemetry({
-      profile: "throughput",
-      blocked: true,
-      changed: false,
-      final: {
-        estimatedTokens: 1337,
-      },
-    });
-
-    expect(telemetry).toEqual({
-      profile: "throughput",
-      blocked: true,
-      changed: false,
-      estimatedTokens: 1337,
-    });
-  });
-
-  it("falls back to defaults when optional fields are missing", () => {
-    const telemetry = normalizePromptFootprintTelemetry({
-      final: {},
-      initial: {
-        estimatedTokens: 420,
-      },
-    });
-
-    expect(telemetry).toEqual({
-      profile: "balanced",
-      blocked: false,
-      changed: false,
-      estimatedTokens: 420,
-    });
   });
 });

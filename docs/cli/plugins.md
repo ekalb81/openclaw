@@ -1,18 +1,19 @@
 ---
-summary: "CLI reference for `openclaw plugins` (list, install, uninstall, enable/disable, doctor, lint-policy)"
+summary: "CLI reference for `openclaw plugins` (list, install, uninstall, enable/disable, doctor)"
 read_when:
-  - You want to install or manage in-process Gateway plugins
+  - You want to install or manage Gateway plugins or compatible bundles
   - You want to debug plugin load failures
 title: "plugins"
 ---
 
 # `openclaw plugins`
 
-Manage Gateway plugins/extensions (loaded in-process).
+Manage Gateway plugins/extensions and compatible bundles.
 
 Related:
 
 - Plugin system: [Plugins](/tools/plugin)
+- Bundle compatibility: [Plugin bundles](/plugins/bundles)
 - Plugin manifest + schema: [Plugin manifest](/plugins/manifest)
 - Security hardening: [Security](/gateway/security)
 
@@ -25,7 +26,6 @@ openclaw plugins enable <id>
 openclaw plugins disable <id>
 openclaw plugins uninstall <id>
 openclaw plugins doctor
-openclaw plugins lint-policy
 openclaw plugins update <id>
 openclaw plugins update --all
 ```
@@ -33,16 +33,13 @@ openclaw plugins update --all
 Bundled plugins ship with OpenClaw but start disabled. Use `plugins enable` to
 activate them.
 
-Auto-discovered plugins from `~/.openclaw/extensions` and
-`<workspace>/.openclaw/extensions` are blocked unless the plugin id appears in
-`plugins.allow`.
+Native OpenClaw plugins must ship `openclaw.plugin.json` with an inline JSON
+Schema (`configSchema`, even if empty). Compatible bundles use their own bundle
+manifests instead.
 
-If you need temporary warning-only behavior while migrating existing installs,
-set `OPENCLAW_PLUGIN_TRUST_ALLOWLIST_MODE=warn` before starting the gateway.
-
-All plugins must ship a `openclaw.plugin.json` file with an inline JSON Schema
-(`configSchema`, even if empty). Missing/invalid manifests or schemas prevent
-the plugin from loading and fail config validation.
+`plugins list` shows `Format: openclaw` or `Format: bundle`. Verbose list/info
+output also shows the bundle subtype (`codex`, `claude`, or `cursor`) plus detected bundle
+capabilities.
 
 ### Install
 
@@ -53,14 +50,34 @@ openclaw plugins install <npm-spec> --pin
 
 Security note: treat plugin installs like running code. Prefer pinned versions.
 
-Npm specs are **registry-only** (package name + optional version/tag). Git/URL/file
-specs are rejected. Dependency installs run with `--ignore-scripts` for safety.
+Npm specs are **registry-only** (package name + optional **exact version** or
+**dist-tag**). Git/URL/file specs and semver ranges are rejected. Dependency
+installs run with `--ignore-scripts` for safety.
+
+Bare specs and `@latest` stay on the stable track. If npm resolves either of
+those to a prerelease, OpenClaw stops and asks you to opt in explicitly with a
+prerelease tag such as `@beta`/`@rc` or an exact prerelease version such as
+`@1.2.3-beta.4`.
 
 If a bare install spec matches a bundled plugin id (for example `diffs`), OpenClaw
 installs the bundled plugin directly. To install an npm package with the same
 name, use an explicit scoped spec (for example `@scope/diffs`).
 
 Supported archives: `.zip`, `.tgz`, `.tar.gz`, `.tar`.
+
+For local paths and archives, OpenClaw auto-detects:
+
+- native OpenClaw plugins (`openclaw.plugin.json`)
+- Codex-compatible bundles (`.codex-plugin/plugin.json`)
+- Claude-compatible bundles (`.claude-plugin/plugin.json` or the default Claude
+  component layout)
+- Cursor-compatible bundles (`.cursor-plugin/plugin.json`)
+
+Compatible bundles install into the normal extensions root and participate in
+the same list/info/enable/disable flow. Today, bundle skills, Claude
+command-skills, Claude `settings.json` defaults, Cursor command-skills, and compatible Codex hook
+directories are supported; other detected bundle capabilities are shown in
+diagnostics/info but are not yet wired into runtime execution.
 
 Use `--link` to avoid copying a local directory (adds to `plugins.load.paths`):
 
@@ -102,26 +119,3 @@ Updates only apply to plugins installed from npm (tracked in `plugins.installs`)
 When a stored integrity hash exists and the fetched artifact hash changes,
 OpenClaw prints a warning and asks for confirmation before proceeding. Use
 global `--yes` to bypass prompts in CI/non-interactive runs.
-
-### Policy lint
-
-```bash
-openclaw plugins lint-policy
-openclaw plugins lint-policy --path ./extensions/my-plugin
-openclaw plugins lint-policy --trust-mode warn
-openclaw plugins lint-policy --json
-```
-
-`lint-policy` validates plugin policy guardrails before release/deploy:
-
-- plugin manifest/discovery diagnostics,
-- trust allowlist coverage for auto-discovered workspace/global plugins,
-- runtime dependency policy checks (`workspace:*` in `dependencies`, `openclaw` in runtime deps).
-
-Options:
-
-- `--path <path>` (repeatable): lint explicit plugin paths only (skips workspace/global scan).
-- `--workspace <path>`: override workspace root for discovery.
-- `--trust-mode <enforce|warn>`: enforce or warning-only trust check mode.
-- `--fail-on-warn`: exit non-zero when warnings are present.
-- `--json`: output machine-readable report.

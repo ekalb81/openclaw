@@ -9,7 +9,6 @@ import {
 import type { Locale, TranslationMap } from "./types.ts";
 
 type Subscriber = (locale: Locale) => void;
-const LOCALE_STORAGE_KEY = "openclaw.i18n.locale";
 
 export { SUPPORTED_LOCALES, isSupportedLocale };
 
@@ -17,47 +16,46 @@ class I18nManager {
   private locale: Locale = DEFAULT_LOCALE;
   private translations: Partial<Record<Locale, TranslationMap>> = { [DEFAULT_LOCALE]: en };
   private subscribers: Set<Subscriber> = new Set();
-  private startupLocaleLoad: Promise<void>;
 
   constructor() {
-    this.startupLocaleLoad = this.loadLocale();
+    this.loadLocale();
   }
 
-  private getStoredLocale(): string | null {
-    if (typeof globalThis.localStorage === "undefined") {
+  private readStoredLocale(): string | null {
+    const storage = globalThis.localStorage;
+    if (!storage || typeof storage.getItem !== "function") {
       return null;
     }
     try {
-      return localStorage.getItem(LOCALE_STORAGE_KEY);
+      return storage.getItem("openclaw.i18n.locale");
     } catch {
       return null;
     }
   }
 
   private persistLocale(locale: Locale) {
-    if (typeof globalThis.localStorage === "undefined") {
+    const storage = globalThis.localStorage;
+    if (!storage || typeof storage.setItem !== "function") {
       return;
     }
     try {
-      localStorage.setItem(LOCALE_STORAGE_KEY, locale);
+      storage.setItem("openclaw.i18n.locale", locale);
     } catch {
-      // Ignore storage failures so non-browser contexts keep working.
+      // Ignore storage write failures in private/blocked contexts.
     }
   }
 
   private resolveInitialLocale(): Locale {
-    const saved = this.getStoredLocale();
+    const saved = this.readStoredLocale();
     if (isSupportedLocale(saved)) {
       return saved;
     }
-    const navigatorLanguage =
-      typeof navigator !== "undefined" && typeof navigator.language === "string"
-        ? navigator.language
-        : DEFAULT_LOCALE;
-    return resolveNavigatorLocale(navigatorLanguage);
+    const language =
+      typeof globalThis.navigator?.language === "string" ? globalThis.navigator.language : null;
+    return resolveNavigatorLocale(language ?? "");
   }
 
-  private async loadLocale() {
+  private loadLocale() {
     const initialLocale = this.resolveInitialLocale();
     if (initialLocale === DEFAULT_LOCALE) {
       this.locale = DEFAULT_LOCALE;
@@ -65,11 +63,7 @@ class I18nManager {
     }
     // Use the normal locale setter so startup locale loading follows the same
     // translation-loading + notify path as manual locale changes.
-    await this.setLocale(initialLocale);
-  }
-
-  public async waitForStartupLocale() {
-    await this.startupLocaleLoad;
+    void this.setLocale(initialLocale);
   }
 
   public getLocale(): Locale {
@@ -149,10 +143,6 @@ class I18nManager {
 
     return value;
   }
-}
-
-export function createI18nManager() {
-  return new I18nManager();
 }
 
 export const i18n = new I18nManager();

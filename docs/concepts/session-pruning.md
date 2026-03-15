@@ -12,22 +12,16 @@ Session pruning trims **old tool results** from the in-memory context right befo
 
 ## When it runs
 
-- `mode: "cache-ttl"` is enabled by default (unless you set `mode: "off"`).
-- Pruning runs when the last cache-TTL touch for the session is older than `ttl`.
+- When `mode: "cache-ttl"` is enabled and the last Anthropic call for the session is older than `ttl`.
 - Only affects the messages sent to the model for that request.
-- `policy: "eligible"` (default) limits pruning to cache-TTL-eligible providers/models:
-  - Native providers: `anthropic`, `moonshot`, `zai`
-  - `openrouter` model prefixes: `anthropic/*`, `moonshot/*`, `moonshotai/*`, `zai/*`
-  - `kilocode` model prefix: `anthropic/*`
-- `policy: "all"` applies pruning for any provider/model.
+- Only active for Anthropic API calls (and OpenRouter Anthropic models).
 - For best results, match `ttl` to your model `cacheRetention` policy (`short` = 5m, `long` = 1h).
 - After a prune, the TTL window resets so subsequent requests keep cache until `ttl` expires again.
 
 ## Smart defaults (Anthropic)
 
-- Pruning is enabled by default globally (`mode: "cache-ttl"`, `policy: "eligible"`).
-- **OAuth or setup-token** profiles: default `ttl` to `1h` and set heartbeat to `1h`.
-- **API key** profiles: default `ttl` to `1h`, set heartbeat to `30m`, and default `cacheRetention: "short"` on Anthropic models.
+- **OAuth or setup-token** profiles: enable `cache-ttl` pruning and set heartbeat to `1h`.
+- **API key** profiles: enable `cache-ttl` pruning, set heartbeat to `30m`, and default `cacheRetention: "short"` on Anthropic models.
 - If you set any of these values explicitly, OpenClaw does **not** override them.
 
 ## What this improves (cost + cache behavior)
@@ -79,14 +73,10 @@ If `agents.defaults.contextTokens` is set, it is treated as a cap (min) on the r
 ## Interaction with other limits
 
 - Built-in tools already truncate their own output; session pruning is an extra layer that prevents long-running chats from accumulating too much tool output in the model context.
-- Compaction is separate: compaction summarizes and persists, pruning is transient per request.
-- Tool-result context compaction is also separate: stale tool outputs are summarized in-memory right before prompt dispatch.
-  See [/concepts/compaction](/concepts/compaction).
+- Compaction is separate: compaction summarizes and persists, pruning is transient per request. See [/concepts/compaction](/concepts/compaction).
 
 ## Defaults (when enabled)
 
-- `mode`: `"cache-ttl"`
-- `policy`: `"eligible"`
 - `ttl`: `"5m"`
 - `keepLastAssistants`: `3`
 - `softTrimRatio`: `0.3`
@@ -97,15 +87,7 @@ If `agents.defaults.contextTokens` is set, it is treated as a cap (min) on the r
 
 ## Examples
 
-Default behavior (on, eligible providers):
-
-```json5
-{
-  agents: { defaults: { contextPruning: { mode: "cache-ttl", policy: "eligible" } } },
-}
-```
-
-Disable pruning (off switch):
+Default (off):
 
 ```json5
 {
@@ -113,11 +95,11 @@ Disable pruning (off switch):
 }
 ```
 
-Enable pruning for all providers:
+Enable TTL-aware pruning:
 
 ```json5
 {
-  agents: { defaults: { contextPruning: { mode: "cache-ttl", policy: "all", ttl: "5m" } } },
+  agents: { defaults: { contextPruning: { mode: "cache-ttl", ttl: "5m" } } },
 }
 ```
 

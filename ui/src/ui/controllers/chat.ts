@@ -1,13 +1,11 @@
+import { resetToolStream } from "../app-tool-stream.ts";
 import { extractText } from "../chat/message-extract.ts";
+import { formatConnectError } from "../connect-error.ts";
 import type { GatewayBrowserClient } from "../gateway.ts";
 import type { ChatAttachment } from "../ui-types.ts";
 import { generateUUID } from "../uuid.ts";
 
 const SILENT_REPLY_PATTERN = /^\s*NO_REPLY\s*$/;
-const MAIN_SESSION_ALIAS = "agent:main:main";
-const DEFAULT_CHAT_RUN_WATCHDOG_MS = 60_000;
-const MIN_CHAT_RUN_WATCHDOG_MS = 5_000;
-const MAX_CHAT_RUN_WATCHDOG_MS = 15 * 60_000;
 
 function isSilentReplyStream(text: string): boolean {
   return SILENT_REPLY_PATTERN.test(text);
@@ -43,9 +41,6 @@ export type ChatState = {
   chatRunId: string | null;
   chatStream: string | null;
   chatStreamStartedAt: number | null;
-  chatRunWatchdogTimer?: ReturnType<typeof setTimeout> | null;
-  chatRunWatchdogLastActivityAtMs?: number | null;
-  chatRunWatchdogRecoveryInFlight?: boolean;
   lastError: string | null;
 };
 
@@ -57,102 +52,16 @@ export type ChatEventPayload = {
   errorMessage?: string;
 };
 
-function normalizeMainSessionAlias(value: string | null | undefined): string {
-  const normalized = (value ?? "").trim().toLowerCase();
-  if (!normalized) {
-    return "";
+function maybeResetToolStream(state: ChatState) {
+  const toolHost = state as ChatState & Partial<Parameters<typeof resetToolStream>[0]>;
+  if (
+    toolHost.toolStreamById instanceof Map &&
+    Array.isArray(toolHost.toolStreamOrder) &&
+    Array.isArray(toolHost.chatToolMessages) &&
+    Array.isArray(toolHost.chatStreamSegments)
+  ) {
+    resetToolStream(toolHost as Parameters<typeof resetToolStream>[0]);
   }
-  return normalized === MAIN_SESSION_ALIAS ? "main" : normalized;
-}
-
-function sessionKeysMatch(left: string, right: string): boolean {
-  if (left === right) {
-    return true;
-  }
-  return normalizeMainSessionAlias(left) === normalizeMainSessionAlias(right);
-}
-
-function cancelRunWatchdogTimer(state: ChatState) {
-  const timer = state.chatRunWatchdogTimer ?? null;
-  if (timer !== null) {
-    clearTimeout(timer);
-  }
-  state.chatRunWatchdogTimer = null;
-}
-
-function clearRunWatchdog(state: ChatState) {
-  cancelRunWatchdogTimer(state);
-  state.chatRunWatchdogLastActivityAtMs = null;
-}
-
-function resolveRunWatchdogSettings(state: ChatState): { enabled: boolean; timeoutMs: number } {
-  const settings = (state as unknown as { settings?: Record<string, unknown> }).settings ?? {};
-  const enabled =
-    typeof settings.chatRunWatchdogEnabled === "boolean" ? settings.chatRunWatchdogEnabled : true;
-  const timeoutRaw =
-    typeof settings.chatRunWatchdogMs === "number" && Number.isFinite(settings.chatRunWatchdogMs)
-      ? settings.chatRunWatchdogMs
-      : DEFAULT_CHAT_RUN_WATCHDOG_MS;
-  const timeoutMs = Math.min(
-    MAX_CHAT_RUN_WATCHDOG_MS,
-    Math.max(MIN_CHAT_RUN_WATCHDOG_MS, timeoutRaw),
-  );
-  return { enabled, timeoutMs };
-}
-
-async function recoverFromRunWatchdog(state: ChatState) {
-  if (state.chatRunWatchdogRecoveryInFlight) {
-    return;
-  }
-  state.chatRunWatchdogRecoveryInFlight = true;
-  try {
-    await loadChatHistory(state);
-  } catch {
-    // best-effort recovery
-  } finally {
-    state.chatRunId = null;
-    state.chatStream = null;
-    state.chatStreamStartedAt = null;
-    clearRunWatchdog(state);
-    state.chatRunWatchdogRecoveryInFlight = false;
-  }
-}
-
-function scheduleRunWatchdog(state: ChatState) {
-  cancelRunWatchdogTimer(state);
-  if (!state.chatRunId) {
-    return;
-  }
-  const { enabled, timeoutMs } = resolveRunWatchdogSettings(state);
-  if (!enabled) {
-    return;
-  }
-  const runId = state.chatRunId;
-  const now = Date.now();
-  if (state.chatRunWatchdogLastActivityAtMs == null) {
-    state.chatRunWatchdogLastActivityAtMs = state.chatStreamStartedAt ?? now;
-  }
-  state.chatRunWatchdogTimer = setTimeout(() => {
-    if (state.chatRunId !== runId) {
-      return;
-    }
-    const lastActivityAt =
-      state.chatRunWatchdogLastActivityAtMs ?? state.chatStreamStartedAt ?? now;
-    const idleForMs = Date.now() - lastActivityAt;
-    if (idleForMs < timeoutMs) {
-      scheduleRunWatchdog(state);
-      return;
-    }
-    void recoverFromRunWatchdog(state);
-  }, timeoutMs);
-}
-
-function touchRunWatchdog(state: ChatState) {
-  if (!state.chatRunId) {
-    return;
-  }
-  state.chatRunWatchdogLastActivityAtMs = Date.now();
-  scheduleRunWatchdog(state);
 }
 
 export async function loadChatHistory(state: ChatState) {
@@ -172,6 +81,11 @@ export async function loadChatHistory(state: ChatState) {
     const messages = Array.isArray(res.messages) ? res.messages : [];
     state.chatMessages = messages.filter((message) => !isAssistantSilentReply(message));
     state.chatThinkingLevel = res.thinkingLevel ?? null;
+    // Clear all streaming state — history includes tool results and text
+    // inline, so keeping streaming artifacts would cause duplicates.
+    maybeResetToolStream(state);
+    state.chatStream = null;
+    state.chatStreamStartedAt = null;
   } catch (err) {
     state.lastError = String(err);
   } finally {
@@ -282,8 +196,6 @@ export async function sendChatMessage(
   state.chatRunId = runId;
   state.chatStream = "";
   state.chatStreamStartedAt = now;
-  state.chatRunWatchdogLastActivityAtMs = now;
-  scheduleRunWatchdog(state);
 
   // Convert attachments to API format
   const apiAttachments = hasAttachments
@@ -312,11 +224,10 @@ export async function sendChatMessage(
     });
     return runId;
   } catch (err) {
-    const error = String(err);
+    const error = formatConnectError(err);
     state.chatRunId = null;
     state.chatStream = null;
     state.chatStreamStartedAt = null;
-    clearRunWatchdog(state);
     state.lastError = error;
     state.chatMessages = [
       ...state.chatMessages,
@@ -344,7 +255,7 @@ export async function abortChatRun(state: ChatState): Promise<boolean> {
     );
     return true;
   } catch (err) {
-    state.lastError = String(err);
+    state.lastError = formatConnectError(err);
     return false;
   }
 }
@@ -353,7 +264,7 @@ export function handleChatEvent(state: ChatState, payload?: ChatEventPayload) {
   if (!payload) {
     return null;
   }
-  if (!sessionKeysMatch(payload.sessionKey, state.sessionKey)) {
+  if (payload.sessionKey !== state.sessionKey) {
     return null;
   }
 
@@ -372,7 +283,6 @@ export function handleChatEvent(state: ChatState, payload?: ChatEventPayload) {
   }
 
   if (payload.state === "delta") {
-    touchRunWatchdog(state);
     const next = extractText(payload.message);
     if (typeof next === "string" && !isSilentReplyStream(next)) {
       const current = state.chatStream ?? "";
@@ -397,7 +307,6 @@ export function handleChatEvent(state: ChatState, payload?: ChatEventPayload) {
     state.chatStream = null;
     state.chatRunId = null;
     state.chatStreamStartedAt = null;
-    clearRunWatchdog(state);
   } else if (payload.state === "aborted") {
     const normalizedMessage = normalizeAbortedAssistantMessage(payload.message);
     if (normalizedMessage && !isAssistantSilentReply(normalizedMessage)) {
@@ -418,12 +327,10 @@ export function handleChatEvent(state: ChatState, payload?: ChatEventPayload) {
     state.chatStream = null;
     state.chatRunId = null;
     state.chatStreamStartedAt = null;
-    clearRunWatchdog(state);
   } else if (payload.state === "error") {
     state.chatStream = null;
     state.chatRunId = null;
     state.chatStreamStartedAt = null;
-    clearRunWatchdog(state);
     state.lastError = payload.errorMessage ?? "chat error";
   }
   return payload.state;
